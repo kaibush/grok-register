@@ -748,6 +748,7 @@ def outlookemail_get_oai_code(
     poll_interval=3,
     log_callback=None,
     cancel_callback=None,
+    min_received_at=None,
 ):
     return outlookemail_provider.wait_for_code(
         http_get,
@@ -763,6 +764,7 @@ def outlookemail_get_oai_code(
         proxies=get_proxies(),
         timeout=timeout,
         poll_interval=poll_interval,
+        min_received_at=min_received_at,
         raise_if_cancelled=raise_if_cancelled,
         sleep_with_cancel=sleep_with_cancel,
         log_callback=log_callback,
@@ -1431,6 +1433,7 @@ def get_oai_code(
     log_callback=None,
     cancel_callback=None,
     resend_callback=None,
+    min_received_at=None,
 ):
     provider = get_email_provider()
     if provider == "outlookemail":
@@ -1440,6 +1443,7 @@ def get_oai_code(
             poll_interval=poll_interval,
             log_callback=log_callback,
             cancel_callback=cancel_callback,
+            min_received_at=min_received_at,
         )
     if provider == "yyds":
         return yyds_get_oai_code(
@@ -2142,13 +2146,14 @@ def run_registration(count):
                             log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
                             cancel_callback=controller.should_stop,
                         )
-                        email, dev_token = fill_email_and_submit(
+                        email, dev_token, submitted_at = fill_email_and_submit(
                             log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
                             cancel_callback=controller.should_stop,
                         )
                         code = fill_code_and_submit(
                             email,
                             dev_token,
+                            submitted_at=submitted_at,
                             log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
                             cancel_callback=controller.should_stop,
                         )
@@ -2416,7 +2421,7 @@ def run_registration(count):
                         log_callback=registration_log, cancel_callback=controller.should_stop
                     )
                     registration_log("[*] 2. 创建邮箱并提交")
-                    email, dev_token = fill_email_and_submit(
+                    email, dev_token, submitted_at = fill_email_and_submit(
                         log_callback=registration_log, cancel_callback=controller.should_stop
                     )
                     registration_log(f"[*] 邮箱: {email}")
@@ -2435,6 +2440,7 @@ def run_registration(count):
                         code = fill_code_and_submit(
                             email,
                             dev_token,
+                            submitted_at=submitted_at,
                             log_callback=registration_log,
                             cancel_callback=controller.should_stop,
                         )

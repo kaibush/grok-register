@@ -9,6 +9,8 @@ import random
 import re
 import threading
 import time
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from http.cookies import SimpleCookie
 from typing import Any, Callable, Iterable, List, Optional
 from urllib.parse import urlsplit
@@ -658,6 +660,50 @@ def get_temp_messages(
     return pick_list(data)
 
 
+def message_received_at(message: Any) -> Optional[float]:
+    """Return an email's received time as a Unix timestamp when available."""
+    if not isinstance(message, dict):
+        return None
+
+    for key in (
+        "timestamp",
+        "received_at",
+        "receivedAt",
+        "receivedDateTime",
+        "date",
+        "created_at",
+        "createdAt",
+    ):
+        raw_value = message.get(key)
+        if raw_value is None or isinstance(raw_value, bool):
+            continue
+
+        if isinstance(raw_value, (int, float)):
+            timestamp = float(raw_value)
+        else:
+            value = str(raw_value or "").strip()
+            if not value:
+                continue
+            try:
+                timestamp = float(value)
+            except ValueError:
+                try:
+                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError:
+                    try:
+                        parsed = parsedate_to_datetime(value)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                timestamp = parsed.timestamp()
+
+        # Some temp-mail APIs expose Unix milliseconds instead of seconds.
+        if timestamp > 100_000_000_000:
+            timestamp /= 1000
+        if timestamp > 0:
+            return timestamp
+    return None
+
+
 def mail_text(message: Any) -> str:
     if not isinstance(message, dict):
         return ""
@@ -713,6 +759,7 @@ def wait_for_code(
     sleep_with_cancel: Callable[[float, Optional[Callable[[], bool]]], None],
     log_callback: Optional[Callable[[str], None]] = None,
     cancel_callback: Optional[Callable[[], bool]] = None,
+    min_received_at: Optional[float] = None,
 ) -> str:
     deadline = time.time() + timeout
     seen_ids: set[str] = set()
@@ -758,6 +805,19 @@ def wait_for_code(
             if message_id in seen_ids:
                 continue
             seen_ids.add(message_id)
+            if min_received_at is not None:
+                received_at = message_received_at(message)
+                if received_at is None:
+                    if log_callback:
+                        log_callback("[Debug] OutlookEmail 跳过无可用收件时间的邮件")
+                    continue
+                if received_at <= min_received_at:
+                    if log_callback:
+                        log_callback(
+                            "[Debug] OutlookEmail 跳过提交邮箱前收到的邮件: "
+                            f"received_at={received_at:.3f} <= submitted_at={min_received_at:.3f}"
+                        )
+                    continue
             if log_callback:
                 log_callback(f"[Debug] OutlookEmail 收到邮件: {subject} ({sender_text(message)})")
             code = extract_verification_code(text, subject)

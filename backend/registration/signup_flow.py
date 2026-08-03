@@ -836,6 +836,7 @@ return candidates[0].text || true;
             sleep_with_cancel(0.5, cancel_callback)
             continue
         sleep_with_cancel(0.8, cancel_callback)
+        submit_clicked_at = time.time()
         clicked = _native_click_action(
             (
                 "注册", "继续", "下一步", "确认", "sign up", "signup", "continue", "next", "create account",
@@ -854,6 +855,7 @@ return candidates[0].text || true;
             ),
         )
         if not clicked:
+            submit_clicked_at = time.time()
             clicked = page.run_js(
                 r"""
 function isVisible(node) {
@@ -936,7 +938,7 @@ return 'enter';
                 if log_callback:
                     detail = f" ({clicked})" if isinstance(clicked, str) else ""
                     log_callback(f"[*] 已填写邮箱并提交: {email}{detail}")
-                return email, dev_token
+                return email, dev_token, submit_clicked_at
             if log_callback and time.time() - last_diag_time >= 5:
                 last_diag_time = time.time()
                 log_callback(f"[Debug] 已点击注册但页面未前进，重试提交: {email}")
@@ -953,7 +955,14 @@ return 'enter';
     raise Exception("未找到邮箱输入框或注册按钮")
 
 
-def fill_code_and_submit(email, dev_token, timeout=180, log_callback=None, cancel_callback=None):
+def fill_code_and_submit(
+    email,
+    dev_token,
+    timeout=180,
+    log_callback=None,
+    cancel_callback=None,
+    submitted_at=None,
+):
     def _resend_code():
         native = _native_click_action(("重新发送", "再次发送", "resend", "reenviar", "renvoyer", "erneut senden", "再送"))
         if native:
@@ -976,6 +985,7 @@ return false;
         log_callback=log_callback,
         cancel_callback=cancel_callback,
         resend_callback=_resend_code,
+        min_received_at=submitted_at,
     )
     if not code:
         raise Exception("获取验证码失败")

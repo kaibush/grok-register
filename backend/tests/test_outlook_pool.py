@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 
 from backend.mailbox import outlook_pool
 
@@ -255,6 +256,73 @@ class OutlookEmailDisableTests(unittest.TestCase):
             session_cookie="session=initial",
         )
         self.assertTrue(result["success"])
+
+
+class OutlookEmailCodeTimeTests(unittest.TestCase):
+    def test_message_received_at_supports_api_timestamp_formats(self):
+        self.assertEqual(
+            outlook_pool.message_received_at({"timestamp": 1_700_000_000_000}),
+            1_700_000_000,
+        )
+        self.assertEqual(
+            outlook_pool.message_received_at({"date": "2026-08-04T12:00:00Z"}),
+            datetime(2026, 8, 4, 12, tzinfo=timezone.utc).timestamp(),
+        )
+        self.assertIsNone(outlook_pool.message_received_at({"date": "unknown"}))
+
+    def test_wait_for_code_ignores_messages_before_submission(self):
+        submitted_at = 1_700_000_000.5
+        requested = []
+
+        def http_get(url, **kwargs):
+            requested.append((url, kwargs))
+            return FakeResponse(
+                {
+                    "success": True,
+                    "emails": [
+                        {
+                            "id": "old",
+                            "subject": "OLD-111 xAI",
+                            "date": submitted_at - 1,
+                            "body_preview": "OLD-111",
+                        },
+                        {
+                            "id": "boundary",
+                            "subject": "BND-333 xAI",
+                            "date": submitted_at,
+                            "body_preview": "BND-333",
+                        },
+                        {
+                            "id": "missing-time",
+                            "subject": "MIS-444 xAI",
+                            "body_preview": "MIS-444",
+                        },
+                        {
+                            "id": "new",
+                            "subject": "NEW-222 xAI",
+                            "date": submitted_at + 1,
+                            "body_preview": "NEW-222",
+                        },
+                    ],
+                }
+            )
+
+        code = outlook_pool.wait_for_code(
+            http_get,
+            lambda: None,
+            "http://mail-pool.test",
+            "fixture@outlook.com",
+            api_key="api-key",
+            source="accounts",
+            timeout=1,
+            poll_interval=0,
+            min_received_at=submitted_at,
+            raise_if_cancelled=lambda _callback: None,
+            sleep_with_cancel=lambda _seconds, _callback: None,
+        )
+
+        self.assertEqual(code, "NEW-222")
+        self.assertEqual(requested[0][1]["params"]["email"], "fixture@outlook.com")
 
 
 if __name__ == "__main__":
