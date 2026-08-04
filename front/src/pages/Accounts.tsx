@@ -449,7 +449,7 @@ export function AccountsPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [authJsonLoading, setAuthJsonLoading] = useState<"" | "copy-cpa" | "copy-grok2api">("");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(50);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [relogin, setRelogin] = useState<ReloginStatus | null>(null);
@@ -1158,9 +1158,11 @@ export function AccountsPage() {
                       onChange={(event) => void load(1, Number(event.target.value))}
                       aria-label="每页记录数"
                     >
-                      <option value="20">20</option>
                       <option value="50">50</option>
                       <option value="100">100</option>
+                      <option value="200">200</option>
+                      <option value="500">500</option>
+                      <option value="1000">1000</option>
                     </Select>
                     <span>条，共 {total} 条</span>
                   </div>
