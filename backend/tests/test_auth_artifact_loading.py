@@ -1,12 +1,30 @@
 import json
 import tempfile
 import unittest
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
-from backend.web.application import _find_account_auth_file, _load_account_auth_json, _stream_file
+from fastapi import HTTPException
+
+from backend.web.account_exports import build_account_auth_archive
+from backend.web.application import (
+    MAX_BATCH_ACCOUNT_IDS,
+    _batch_account_ids,
+    _find_account_auth_file,
+    _load_account_auth_json,
+    _stream_file,
+)
 
 
 class WebAuthJsonTests(unittest.TestCase):
+    def test_batch_ids_validate_deduplicate_and_preserve_order(self):
+        self.assertEqual(_batch_account_ids([3, 1, 3, 2]), [3, 1, 2])
+        with self.assertRaisesRegex(HTTPException, "正整数"):
+            _batch_account_ids([0])
+        with self.assertRaisesRegex(HTTPException, f"最多操作 {MAX_BATCH_ACCOUNT_IDS}"):
+            _batch_account_ids(list(range(1, MAX_BATCH_ACCOUNT_IDS + 2)))
+
     def test_loads_cpa_and_grok2api_json_from_configured_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -59,6 +77,29 @@ class WebAuthJsonTests(unittest.TestCase):
             path = Path(tmp) / "fixture.json"
             path.write_bytes(b"abcdefghij")
             self.assertEqual(list(_stream_file(path, chunk_size=4)), [b"abcd", b"efgh", b"ij"])
+
+    def test_batch_archive_exports_available_files_and_reports_skips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            auth_file = root / "xai-user@example.com.json"
+            auth_file.write_text(json.dumps({"email": "user@example.com"}), encoding="utf-8")
+            records = [
+                {"id": 7, "email": "user@example.com", "cpa_auth_path": str(auth_file)},
+                {"id": 8, "email": "missing@example.com"},
+            ]
+
+            content, exported, skipped = build_account_auth_archive(
+                records,
+                {"cpa_auth_dir": str(root)},
+                "cpa",
+                _find_account_auth_file,
+            )
+
+            self.assertEqual((exported, skipped), (1, 1))
+            with zipfile.ZipFile(BytesIO(content)) as archive:
+                self.assertEqual(archive.namelist(), ["7-xai-user@example.com.json"])
+                payload = json.loads(archive.read(archive.namelist()[0]))
+                self.assertEqual(payload["email"], "user@example.com")
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .account_exports import build_account_auth_archive
 from .jobs import job_coordinator
 from .relogin_jobs import relogin_coordinator
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT, STATIC_ROOT
@@ -35,6 +36,7 @@ WEB_SESSION_COOKIE = "grok_register_session"
 WEB_SESSION_TTL = 60 * 60 * 24 * 7
 WEB_AUTH_FILE = DATA_DIR / "web_auth.json"
 LEGACY_WEB_AUTH_FILE = APP_DIR / "web_auth.json"
+MAX_BATCH_ACCOUNT_IDS = 1000
 
 CONFIG_PUBLIC_KEYS = (
     "email_provider",
@@ -106,8 +108,11 @@ SENSITIVE_HINT_KEYS = {
 }
 
 
-class DeleteAccountsBody(BaseModel):
+class AccountIdsBody(BaseModel):
     ids: List[int] = Field(default_factory=list)
+
+
+class DeleteAccountsBody(AccountIdsBody):
     delete_files: bool = True
 
 
@@ -128,6 +133,26 @@ class LoginBody(BaseModel):
     username: str = ""
     password: str = ""
     confirm_password: str = ""
+
+
+def _batch_account_ids(ids: List[int]) -> List[int]:
+    normalized: List[int] = []
+    seen = set()
+    for account_id in ids or []:
+        if account_id <= 0:
+            raise HTTPException(status_code=400, detail="账号 ID 必须是正整数")
+        if account_id in seen:
+            continue
+        seen.add(account_id)
+        normalized.append(account_id)
+        if len(normalized) > MAX_BATCH_ACCOUNT_IDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"单次最多操作 {MAX_BATCH_ACCOUNT_IDS} 个账号",
+            )
+    if not normalized:
+        raise HTTPException(status_code=400, detail="请选择要操作的账号")
+    return normalized
 
 
 def _gr():
@@ -708,6 +733,51 @@ def create_app() -> FastAPI:
     def api_account_relogin_status() -> Dict[str, Any]:
         return {"ok": True, "relogin": relogin_coordinator.status()}
 
+    @app.post("/api/accounts/relogin")
+    def api_accounts_relogin(body: AccountIdsBody) -> Dict[str, Any]:
+        if job_coordinator.status().get("running"):
+            raise HTTPException(status_code=409, detail="注册任务运行中，请等待任务结束后重新登录")
+        try:
+            status = relogin_coordinator.start_many(_batch_account_ids(body.ids))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "relogin": status}
+
+    @app.post("/api/accounts/auth-json/{kind}/download")
+    def api_accounts_auth_json_download(kind: str, body: AccountIdsBody) -> StreamingResponse:
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind not in {"cpa", "grok2api"}:
+            raise HTTPException(status_code=400, detail="kind 必须是 cpa 或 grok2api")
+        ids = _batch_account_ids(body.ids)
+        gr = _gr()
+        gr.load_config()
+        records = gr.get_registration_repository().get_results_by_ids(ids)
+        if not records:
+            raise HTTPException(status_code=404, detail="没有匹配的记录")
+        archive, exported, skipped = build_account_auth_archive(
+            records, gr.config, normalized_kind, _find_account_auth_file
+        )
+        if not exported:
+            label = "CPA" if normalized_kind == "cpa" else "Grok2API"
+            raise HTTPException(status_code=404, detail=f"所选账号均没有可导出的 {label} JSON")
+        filename = f"{normalized_kind}-auth-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+        return StreamingResponse(
+            iter([archive]),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(archive)),
+                "Cache-Control": "no-cache",
+                "X-Content-Type-Options": "nosniff",
+                "X-Exported-Count": str(exported),
+                "X-Skipped-Count": str(skipped),
+            },
+        )
+
     @app.get("/api/accounts/{account_id}")
     def api_account_detail(account_id: int) -> Dict[str, Any]:
         gr = _gr()
@@ -845,9 +915,7 @@ def create_app() -> FastAPI:
     @app.post("/api/accounts/delete")
     def api_accounts_delete(body: DeleteAccountsBody) -> Dict[str, Any]:
         gr = _gr()
-        ids = body.ids or []
-        if not ids:
-            raise HTTPException(status_code=400, detail="请提供要删除的 ids 列表")
+        ids = _batch_account_ids(body.ids)
 
         from backend.registration.artifacts import (
             cleanup_side_files_for_emails,

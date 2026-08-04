@@ -17,9 +17,9 @@ import {
   Power,
   RefreshCw,
   Search,
-  Trash2,
   X,
 } from "lucide-react";
+import { AccountBatchActions } from "@/components/AccountBatchActions";
 import { api, type AccountRecord, type ReloginStatus } from "@/lib/api";
 import { copyText, formatDuration, maskSecret } from "@/lib/utils";
 import {
@@ -455,6 +455,8 @@ export function AccountsPage() {
   const [relogin, setRelogin] = useState<ReloginStatus | null>(null);
   const [reloginPolling, setReloginPolling] = useState(true);
   const [reloginFailure, setReloginFailure] = useState<{ email: string; error: string } | null>(null);
+  const [batchMenuOpen, setBatchMenuOpen] = useState(false);
+  const [batchBusy, setBatchBusy] = useState<"" | "export-cpa" | "export-grok2api" | "relogin">("");
   const [grok2apiImportingId, setGrok2apiImportingId] = useState<number | null>(null);
   const [moreMenu, setMoreMenu] = useState<{
     item: AccountRecord;
@@ -508,7 +510,8 @@ export function AccountsPage() {
           );
       const maxPage = Math.max(1, Math.ceil(nextTotal / targetPageSize));
       if (targetPage > maxPage) {
-        return load(maxPage, targetPageSize);
+        await load(maxPage, targetPageSize);
+        return;
       }
       setItems(data.items || []);
       setTotal(nextTotal);
@@ -543,7 +546,10 @@ export function AccountsPage() {
         if (!next.running) {
           if (lastRunning) await load();
           if (next.error) {
-            setReloginFailure({ email: next.email, error: next.error });
+            setReloginFailure({
+              email: next.total_count > 1 ? "" : next.email,
+              error: next.error,
+            });
           } else if (lastRunning) {
             showToast("重新登录完成，授权文件已刷新", "success");
           }
@@ -635,6 +641,47 @@ export function AccountsPage() {
     startAuthDownload(detail.id, kind);
   };
 
+  const onBatchExport = async (kind: "cpa" | "grok2api") => {
+    if (!selectedIds.length) return;
+    setBatchMenuOpen(false);
+    setBatchBusy(`export-${kind}` as "export-cpa" | "export-grok2api");
+    try {
+      const result = await api.downloadAuthArchive(selectedIds, kind);
+      const url = URL.createObjectURL(result.blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = result.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      const skipped = result.skipped ? `，跳过 ${result.skipped} 个无文件账号` : "";
+      showToast(`已导出 ${result.exported} 个授权文件${skipped}`, "success");
+    } catch (err: any) {
+      showToast(err.message || "批量导出失败", "error");
+    } finally {
+      setBatchBusy("");
+    }
+  };
+
+  const onBatchRelogin = async () => {
+    if (!selectedIds.length) return;
+    if (!window.confirm(`按顺序重新登录选中的 ${selectedIds.length} 个账号并刷新授权文件？`)) return;
+    setBatchMenuOpen(false);
+    setBatchBusy("relogin");
+    try {
+      const result = await api.startBatchRelogin(selectedIds);
+      setRelogin(result.relogin);
+      setReloginFailure(null);
+      setReloginPolling(!!result.relogin.running);
+      showToast("已启动批量重新登录", "success");
+    } catch (err: any) {
+      showToast(err.message || "启动批量重新登录失败", "error");
+    } finally {
+      setBatchBusy("");
+    }
+  };
+
   const onDelete = async () => {
     if (!selectedIds.length) {
       showToast("请先选择记录", "error");
@@ -645,8 +692,9 @@ export function AccountsPage() {
       const result = await api.deleteAccounts(selectedIds, true);
       showToast(`已删除 ${result.deleted} 条，文件 ${result.deleted_files} 个`, "success");
       setSelected({});
+      setBatchMenuOpen(false);
       setDetail(null);
-      await load();
+      await load(page, pageSize);
     } catch (err: any) {
       showToast(err.message || "删除失败", "error");
     }
@@ -806,10 +854,20 @@ export function AccountsPage() {
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
               刷新
             </Button>
-            <Button variant="destructive" onClick={onDelete} disabled={!selectedIds.length}>
-              <Trash2 className="h-4 w-4" aria-hidden="true" />
-              删除 ({selectedIds.length})
-            </Button>
+            <AccountBatchActions
+              selectedCount={selectedIds.length}
+              busy={!!batchBusy}
+              menuOpen={batchMenuOpen}
+              reloginRunning={!!relogin?.running}
+              onToggleMenu={() => setBatchMenuOpen((open) => !open)}
+              onCloseMenu={() => setBatchMenuOpen(false)}
+              onExport={(kind) => void onBatchExport(kind)}
+              onRelogin={() => void onBatchRelogin()}
+              onDelete={() => {
+                setBatchMenuOpen(false);
+                void onDelete();
+              }}
+            />
           </>
         }
       />
@@ -817,7 +875,12 @@ export function AccountsPage() {
       {relogin?.running ? (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          <span className="font-medium">正在重新登录 {relogin.email}</span>
+          <span className="font-medium">
+            {relogin.total_count > 1
+              ? `批量重新登录 ${Math.min(relogin.completed_count + 1, relogin.total_count)}/${relogin.total_count}`
+              : `正在重新登录 ${relogin.email}`}
+          </span>
+          {relogin.total_count > 1 ? <span className="text-blue-700">{relogin.email}</span> : null}
           <span className="text-blue-700">{relogin.stage}</span>
         </div>
       ) : null}
@@ -838,7 +901,14 @@ export function AccountsPage() {
 
       <Card>
         <CardContent className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-[160px_190px_minmax(0,1fr)_auto]">
-          <Select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="按状态筛选">
+          <Select
+            value={status}
+            onChange={(e) => {
+              setStatus(e.target.value);
+              setSelected({});
+            }}
+            aria-label="按状态筛选"
+          >
             <option value="">全部状态</option>
             <option value="success">success</option>
             <option value="failure">failure</option>
@@ -847,7 +917,10 @@ export function AccountsPage() {
           </Select>
           <Select
             value={emailDisableStatus}
-            onChange={(e) => setEmailDisableStatus(e.target.value)}
+            onChange={(e) => {
+              setEmailDisableStatus(e.target.value);
+              setSelected({});
+            }}
             aria-label="按邮箱停用状态筛选"
           >
             <option value="">全部停用状态</option>
@@ -866,14 +939,27 @@ export function AccountsPage() {
               type="search"
               placeholder="搜索邮箱、服务商、失败原因或 Batch"
               value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
+              onChange={(e) => {
+                setKeyword(e.target.value);
+                setSelected({});
+              }}
               onKeyDown={(e) => {
-                if (e.key === "Enter") void load(1, pageSize);
+                if (e.key === "Enter") {
+                  setSelected({});
+                  void load(1, pageSize);
+                }
               }}
               aria-label="搜索账号记录"
             />
           </div>
-          <Button className="sm:col-span-2 lg:col-span-1" onClick={() => void load(1, pageSize)} disabled={loading}>
+          <Button
+            className="sm:col-span-2 lg:col-span-1"
+            onClick={() => {
+              setSelected({});
+              void load(1, pageSize);
+            }}
+            disabled={loading}
+          >
             <Search className="h-4 w-4" aria-hidden="true" />
             查询
           </Button>
@@ -885,7 +971,10 @@ export function AccountsPage() {
           <CardHeader className="flex-row items-center justify-between gap-3">
             <div>
               <CardTitle>注册记录</CardTitle>
-              <CardDescription>共 {total} 条，第 {page} / {totalPages} 页。</CardDescription>
+              <CardDescription>
+                共 {total} 条，第 {page} / {totalPages} 页
+                {selectedIds.length ? `，已选 ${selectedIds.length} 条` : ""}。
+              </CardDescription>
             </div>
             <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-xl px-2 text-sm text-muted-foreground hover:bg-muted xl:hidden">
               <input
@@ -893,7 +982,7 @@ export function AccountsPage() {
                 checked={allVisibleSelected}
                 onChange={(e) => toggleAll(e.target.checked)}
               />
-              全选
+              全选本页
             </label>
           </CardHeader>
           <CardContent className="p-0">

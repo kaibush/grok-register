@@ -99,6 +99,17 @@ export type ReloginStatus = {
   error: string;
   started_at?: number | null;
   finished_at?: number | null;
+  total_count: number;
+  completed_count: number;
+  success_count: number;
+  failed_count: number;
+};
+
+export type AuthArchiveDownload = {
+  blob: Blob;
+  filename: string;
+  exported: number;
+  skipped: number;
 };
 
 export type ConfigFileSnapshot = {
@@ -138,6 +149,39 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(data?.error || detailText || `请求失败 (${response.status})`);
   }
   return data as T;
+}
+
+async function downloadAuthArchive(
+  ids: number[],
+  kind: "cpa" | "grok2api"
+): Promise<AuthArchiveDownload> {
+  const response = await fetch(`/api/accounts/auth-json/${kind}/download`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (!response.ok) {
+    let data: any = null;
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
+    }
+    if (response.status === 401 && data?.auth_required) {
+      window.dispatchEvent(
+        new CustomEvent("grok-auth-required", { detail: { setupRequired: !!data?.setup_required } })
+      );
+    }
+    throw new Error(data?.detail || data?.error || `下载失败 (${response.status})`);
+  }
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  return {
+    blob: await response.blob(),
+    filename: match?.[1] || `${kind}-auth.zip`,
+    exported: Number(response.headers.get("X-Exported-Count") || 0),
+    skipped: Number(response.headers.get("X-Skipped-Count") || 0),
+  };
 }
 
 export const api = {
@@ -184,9 +228,15 @@ export const api = {
     ),
   accountAuthDownloadUrl: (id: number, kind: "cpa" | "grok2api") =>
     `/api/accounts/${id}/auth-json/${kind}/download`,
+  downloadAuthArchive,
   startRelogin: (id: number) =>
     request<{ ok: boolean; relogin: ReloginStatus }>(`/api/accounts/${id}/relogin`, {
       method: "POST",
+    }),
+  startBatchRelogin: (ids: number[]) =>
+    request<{ ok: boolean; relogin: ReloginStatus }>("/api/accounts/relogin", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
     }),
   reloginStatus: () =>
     request<{ ok: boolean; relogin: ReloginStatus }>("/api/accounts/relogin/status"),

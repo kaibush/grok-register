@@ -10,8 +10,9 @@ import datetime as _datetime
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 
 RESULT_COLUMNS = (
@@ -52,6 +53,8 @@ RESULT_COLUMNS = (
     "extra_json",
 )
 
+SQLITE_IN_BATCH_SIZE = 900
+
 
 class RegistrationRepository:
     def __init__(self, database_path: os.PathLike[str] | str):
@@ -63,13 +66,21 @@ class RegistrationRepository:
     def now_text() -> str:
         return _datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.database_path, timeout=15.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=15000")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=15000")
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _initialize(self) -> None:
         with self._connect() as conn:
@@ -250,15 +261,13 @@ class RegistrationRepository:
             ).fetchone()
         return row is not None
 
-    def list_results(
-        self,
+    @staticmethod
+    def _result_filters(
         *,
         status: str = "",
         email_disable_status: str = "",
         keyword: str = "",
-        limit: int = 2000,
-        offset: int = 0,
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[str, List[Any]]:
         clauses = []
         params: List[Any] = []
         normalized_status = str(status or "").strip().lower()
@@ -278,6 +287,22 @@ class RegistrationRepository:
             )
             params.extend([like, like, like, like, like, like, like])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where, params
+
+    def list_results(
+        self,
+        *,
+        status: str = "",
+        email_disable_status: str = "",
+        keyword: str = "",
+        limit: int = 2000,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        where, params = self._result_filters(
+            status=status,
+            email_disable_status=email_disable_status,
+            keyword=keyword,
+        )
         safe_limit = max(1, min(int(limit or 2000), 10000))
         safe_offset = max(0, int(offset or 0))
         params.extend([safe_limit, safe_offset])
@@ -302,25 +327,11 @@ class RegistrationRepository:
         keyword: str = "",
     ) -> int:
         """返回与账号列表相同筛选条件下的记录总数。"""
-        clauses = []
-        params: List[Any] = []
-        normalized_status = str(status or "").strip().lower()
-        if normalized_status:
-            clauses.append("status = ?")
-            params.append(normalized_status)
-        normalized_disable_status = str(email_disable_status or "").strip().lower()
-        if normalized_disable_status:
-            clauses.append("email_disable_status = ?")
-            params.append(normalized_disable_status)
-        normalized_keyword = str(keyword or "").strip()
-        if normalized_keyword:
-            like = f"%{normalized_keyword}%"
-            clauses.append(
-                "(email LIKE ? OR provider LIKE ? OR failure_reason LIKE ? OR auth_info LIKE ? "
-                "OR batch_id LIKE ? OR email_account_id LIKE ? OR email_disable_error LIKE ?)"
-            )
-            params.extend([like, like, like, like, like, like, like])
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        where, params = self._result_filters(
+            status=status,
+            email_disable_status=email_disable_status,
+            keyword=keyword,
+        )
         with self._connect() as conn:
             row = conn.execute(
                 f"SELECT COUNT(*) AS total FROM registration_results {where}", params
@@ -342,17 +353,20 @@ class RegistrationRepository:
             normalized.append(value)
         if not normalized:
             return []
-        placeholders = ", ".join("?" for _ in normalized)
+        by_id: Dict[int, Dict[str, Any]] = {}
         with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM registration_results
-                WHERE id IN ({placeholders})
-                """,
-                normalized,
-            ).fetchall()
-        by_id = {int(row["id"]): dict(row) for row in rows}
+            for start in range(0, len(normalized), SQLITE_IN_BATCH_SIZE):
+                batch = normalized[start : start + SQLITE_IN_BATCH_SIZE]
+                placeholders = ", ".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"""
+                    SELECT *
+                    FROM registration_results
+                    WHERE id IN ({placeholders})
+                    """,
+                    batch,
+                ).fetchall()
+                by_id.update({int(row["id"]): dict(row) for row in rows})
         return [by_id[item_id] for item_id in normalized if item_id in by_id]
 
     def update_relogin_result(
@@ -502,12 +516,14 @@ class RegistrationRepository:
         if not records:
             return []
         delete_ids = [int(row["id"]) for row in records]
-        placeholders = ", ".join("?" for _ in delete_ids)
         with self._connect() as conn:
-            conn.execute(
-                f"DELETE FROM registration_results WHERE id IN ({placeholders})",
-                delete_ids,
-            )
+            for start in range(0, len(delete_ids), SQLITE_IN_BATCH_SIZE):
+                batch = delete_ids[start : start + SQLITE_IN_BATCH_SIZE]
+                placeholders = ", ".join("?" for _ in batch)
+                conn.execute(
+                    f"DELETE FROM registration_results WHERE id IN ({placeholders})",
+                    batch,
+                )
         return records
 
     def stats(self) -> Dict[str, Any]:
