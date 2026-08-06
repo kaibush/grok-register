@@ -130,7 +130,7 @@ def _navigate_signin(log_callback=None) -> None:
     except Exception:
         pass
     current = str(getattr(page_obj, "url", "") or "")
-    if "accounts.x.ai" not in current:
+    if not any(host in current for host in ("accounts.x.ai", "auth.x.ai", "grok.com")):
         raise RuntimeError(f"打开登录页失败，当前 URL: {current or 'empty'}")
 
 
@@ -152,6 +152,15 @@ def _read_sso_cookie() -> str:
         if name == "sso-rw" and value:
             fallback = value
     return fallback
+
+
+def _reuse_logged_in_sso(log_callback=None, stage="") -> str:
+    """登录页可能已被会话直接重定向，优先复用当前 SSO。"""
+    token = _read_sso_cookie()
+    if token and log_callback:
+        suffix = f"（{stage}）" if stage else ""
+        log_callback(f"[*] 当前浏览器已登录，复用现有 sso cookie{suffix}")
+    return token
 
 
 def _wait_for_login_sso(timeout: int, log_callback=None) -> str:
@@ -193,6 +202,9 @@ def login_with_password(
         raise ValueError("账号记录缺少密码")
 
     _navigate_signin(log_callback=log_callback)
+    existing_sso = _reuse_logged_in_sso(log_callback=log_callback, stage="打开登录页后")
+    if existing_sso:
+        return existing_sso
     _dismiss_cookie_consent(log_callback)
     if log_callback:
         log_callback(f"[*] 打开重新登录页: {normalized_email}")
@@ -202,6 +214,11 @@ def login_with_password(
         deny_keywords=("sign up", "注册"),
     )
     if not clicked:
+        existing_sso = _reuse_logged_in_sso(
+            log_callback=log_callback, stage="未找到邮箱登录按钮时"
+        )
+        if existing_sso:
+            return existing_sso
         raise RuntimeError("登录页未找到“使用邮箱登录”按钮")
 
     if not _wait_until(lambda: bool(_native_input_candidates("email")), 12):

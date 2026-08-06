@@ -2,6 +2,7 @@ import unittest
 from unittest import mock
 
 from backend.registration import engine
+from backend.registration import login_flow
 
 
 class RegistrationRiskRecoveryTests(unittest.TestCase):
@@ -83,6 +84,34 @@ class RegistrationRiskRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result, "fresh-sso")
         refresh.assert_called_once()
+
+    def test_login_reuses_sso_when_the_browser_is_already_logged_in(self):
+        logs = []
+        with (
+            mock.patch.object(login_flow, "_navigate_signin"),
+            mock.patch.object(login_flow, "_read_sso_cookie", return_value="existing-sso"),
+            mock.patch.object(login_flow, "_dismiss_cookie_consent") as dismiss,
+            mock.patch.object(login_flow, "_native_click_action") as click_login,
+        ):
+            result = login_flow.login_with_password(
+                "new@example.com", "secret", log_callback=logs.append
+            )
+
+        self.assertEqual(result, "existing-sso")
+        dismiss.assert_not_called()
+        click_login.assert_not_called()
+        self.assertTrue(any("当前浏览器已登录" in message for message in logs))
+
+    def test_login_rechecks_sso_when_the_email_button_is_missing(self):
+        with (
+            mock.patch.object(login_flow, "_navigate_signin"),
+            mock.patch.object(login_flow, "_dismiss_cookie_consent"),
+            mock.patch.object(login_flow, "_read_sso_cookie", side_effect=("", "existing-sso")),
+            mock.patch.object(login_flow, "_native_click_action", return_value=False),
+        ):
+            result = login_flow.login_with_password("new@example.com", "secret")
+
+        self.assertEqual(result, "existing-sso")
 
 
 if __name__ == "__main__":
