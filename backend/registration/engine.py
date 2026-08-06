@@ -901,8 +901,8 @@ def ensure_sso_oauth_eligible(raw_token, email="", log_callback=None) -> dict:
     return state
 
 
-def refresh_sso_after_registration_risk(raw_token, email="", password="", log_callback=None) -> str:
-    """通过一次正常登录刷新新注册账号的 SSO。"""
+def refresh_sso_with_password(raw_token, email="", password="", log_callback=None, reason="") -> str:
+    """通过一次正常登录为已建号账号取得当前 SSO。"""
     from backend.registration.login_flow import login_with_password
 
     old_sso = _normalize_sso_token(raw_token)
@@ -913,22 +913,65 @@ def refresh_sso_after_registration_risk(raw_token, email="", password="", log_ca
 
     def _risk_log(message):
         if log_callback:
-            log_callback(f"[CPA] {str(message).strip()}")
+            log_callback(f"[SSO] {str(message).strip()}")
 
-    _risk_log("注册期风控标记命中，正在重新登录刷新 SSO ...")
+    prefix = f"{str(reason).strip()}，" if str(reason or "").strip() else ""
+    _risk_log(f"{prefix}正在重新登录刷新 SSO ...")
     try:
         refreshed = _normalize_sso_token(
             login_with_password(normalized_email, secret, timeout=100, log_callback=log_callback)
         )
     except Exception as exc:
-        raise RegistrationRiskDenied(f"注册期风控恢复失败：重新登录未取得 SSO: {exc}") from exc
+        raise RegistrationRiskDenied(f"重新登录未取得 SSO: {exc}") from exc
     if not refreshed:
-        raise RegistrationRiskDenied("注册期风控恢复失败：重新登录返回的 SSO 为空")
+        raise RegistrationRiskDenied("重新登录返回的 SSO 为空")
     if refreshed == old_sso:
         _risk_log("重新登录返回相同 SSO，仍继续尝试 OAuth")
     else:
         _risk_log("已通过重新登录刷新 SSO，继续 OAuth")
     return refreshed
+
+
+def refresh_sso_after_registration_risk(raw_token, email="", password="", log_callback=None) -> str:
+    """处理注册期风控标记时刷新新注册账号的 SSO。"""
+    return refresh_sso_with_password(
+        raw_token,
+        email=email,
+        password=password,
+        log_callback=log_callback,
+        reason="注册期风控标记命中",
+    )
+
+
+def wait_for_registration_sso(email, profile, log_callback=None, cancel_callback=None) -> str:
+    """等待注册 SSO；超时后仅在当前会话没有 SSO 时追加一次登录恢复。"""
+    try:
+        return wait_for_sso_cookie(log_callback=log_callback, cancel_callback=cancel_callback)
+    except RegistrationCancelled:
+        raise
+    except _rf.AccountAlreadyRegistered:
+        raise
+    except Exception as wait_exc:
+        existing = _normalize_sso_token(_rf.current_sso_cookie())
+        if existing:
+            if log_callback:
+                log_callback("[SSO] 等待流程报错，但当前浏览器已登录，复用现有 SSO")
+            return existing
+        password = current_attempt_password(profile)
+        if not password:
+            raise
+        if log_callback:
+            log_callback(
+                "[SSO] 等待 SSO 失败且当前浏览器未发现 SSO，"
+                "通过已注册账号重新登录恢复"
+            )
+        return refresh_sso_with_password(
+            "",
+            email=email,
+            password=password,
+            log_callback=log_callback,
+            reason=f"等待 SSO 失败: {wait_exc}",
+        )
 
 
 def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> bool:
@@ -2312,7 +2355,9 @@ def run_registration(count):
                             log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
                             cancel_callback=controller.should_stop,
                         )
-                        sso = wait_for_sso_cookie(
+                        sso = wait_for_registration_sso(
+                            email,
+                            profile,
                             log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
                             cancel_callback=controller.should_stop,
                         )
@@ -2631,7 +2676,9 @@ def run_registration(count):
                 )
                 registration_log(f"[*] 资料已填: {profile.get('given_name')} {profile.get('family_name')}")
                 registration_log("[*] 5. 等待 sso cookie")
-                sso = wait_for_sso_cookie(
+                sso = wait_for_registration_sso(
+                    email,
+                    profile,
                     log_callback=registration_log, cancel_callback=controller.should_stop
                 )
                 risk_state = ensure_sso_oauth_eligible(

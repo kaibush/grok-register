@@ -56,6 +56,34 @@ class RegistrationRiskRecoveryTests(unittest.TestCase):
         )
         self.assertTrue(any("已通过重新登录刷新 SSO" in message for message in logs))
 
+    def test_sso_wait_failure_reuses_current_browser_sso(self):
+        logs = []
+        with (
+            mock.patch.object(engine, "wait_for_sso_cookie", side_effect=RuntimeError("sso_timeout")),
+            mock.patch.object(engine._rf, "current_sso_cookie", return_value="existing-sso"),
+            mock.patch.object(engine, "refresh_sso_with_password") as refresh,
+        ):
+            result = engine.wait_for_registration_sso(
+                "new@example.com", {"password": "secret"}, log_callback=logs.append
+            )
+
+        self.assertEqual(result, "existing-sso")
+        refresh.assert_not_called()
+        self.assertTrue(any("复用现有 SSO" in message for message in logs))
+
+    def test_sso_wait_failure_relogs_only_when_no_current_sso_exists(self):
+        with (
+            mock.patch.object(engine, "wait_for_sso_cookie", side_effect=RuntimeError("sso_timeout")),
+            mock.patch.object(engine._rf, "current_sso_cookie", return_value=""),
+            mock.patch.object(engine, "refresh_sso_with_password", return_value="fresh-sso") as refresh,
+        ):
+            result = engine.wait_for_registration_sso(
+                "new@example.com", {"password": "secret"}
+            )
+
+        self.assertEqual(result, "fresh-sso")
+        refresh.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

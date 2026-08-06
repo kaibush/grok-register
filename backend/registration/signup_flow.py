@@ -70,6 +70,30 @@ def last_profile() -> Dict[str, str]:
     return dict(getattr(_runtime, "last_profile", {}) or {})
 
 
+def current_sso_cookie() -> str:
+    """读取当前浏览器上下文中的 SSO，不触发导航或登录。"""
+    page_obj = active_page() or page
+    if page_obj is None:
+        return ""
+    try:
+        cookies = page_obj.cookies(all_domains=True, all_info=True) or []
+    except Exception:
+        return ""
+    fallback = ""
+    for item in cookies:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "")
+            value = str(item.get("value") or "")
+        else:
+            name = str(getattr(item, "name", "") or "")
+            value = str(getattr(item, "value", "") or "")
+        if name == "sso" and value:
+            return value
+        if name == "sso-rw" and value:
+            fallback = value
+    return fallback
+
+
 def _AccountRetryNeeded(msg=""):
     cls = _deps.get("AccountRetryNeeded", Exception)
     return cls(msg)
@@ -1517,6 +1541,12 @@ def fill_profile_and_submit(timeout=120, log_callback=None, cancel_callback=None
 
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
+        # 提交后的 redirect 可能比页面状态更新更快；此时账号已经登录，
+        # 不应继续等待旧的资料表单或把本轮误判为资料填写失败。
+        if current_sso_cookie():
+            if log_callback:
+                log_callback("[*] 资料页检测到已登录 SSO，继续后续流程")
+            return {"given_name": given_name, "family_name": family_name, "password": password}
         if not form_filled_once:
             if _native_fill_profile(given_name, family_name, password):
                 filled = "native-filled"
