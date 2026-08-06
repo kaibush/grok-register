@@ -868,7 +868,7 @@ def _append_sso_risk_rejected(email: str, sso: str, details: str, log_callback=N
 
 
 def ensure_sso_oauth_eligible(raw_token, email="", log_callback=None) -> dict:
-    """检查新账号是否被注册风控拒绝；无法判定时继续原有 OAuth 路径。"""
+    """读取新账号的注册风控状态，不将注册期标记当作 OAuth 终态。"""
     if not config.get("cpa_auto_add", False):
         return {}
     if not any(
@@ -892,14 +892,43 @@ def ensure_sso_oauth_eligible(raw_token, email="", log_callback=None) -> dict:
     )
     if state.get("denied"):
         details = str(state.get("bot_flag_details") or "policy=deny,event=$registration")
-        _append_sso_risk_rejected(email, sso, details, log_callback=log_callback)
-        raise RegistrationRiskDenied(
-            "注册风控拒绝，已跳过 OAuth: "
+        _risk_log(
+            "检测到注册期风控标记，将重新登录刷新 SSO 后继续 OAuth: "
             f"botFlagSource={state.get('bot_flag_source')} {details}"
         )
     if not state.get("found"):
         _risk_log(f"未读取到注册风控字段，继续 OAuth: {state.get('error') or 'unknown'}")
     return state
+
+
+def refresh_sso_after_registration_risk(raw_token, email="", password="", log_callback=None) -> str:
+    """通过一次正常登录刷新新注册账号的 SSO。"""
+    from backend.registration.login_flow import login_with_password
+
+    old_sso = _normalize_sso_token(raw_token)
+    normalized_email = str(email or "").strip()
+    secret = str(password or "")
+    if not normalized_email or "@" not in normalized_email or not secret:
+        raise RegistrationRiskDenied("注册期风控恢复失败：缺少邮箱或密码，无法刷新 SSO")
+
+    def _risk_log(message):
+        if log_callback:
+            log_callback(f"[CPA] {str(message).strip()}")
+
+    _risk_log("注册期风控标记命中，正在重新登录刷新 SSO ...")
+    try:
+        refreshed = _normalize_sso_token(
+            login_with_password(normalized_email, secret, timeout=100, log_callback=log_callback)
+        )
+    except Exception as exc:
+        raise RegistrationRiskDenied(f"注册期风控恢复失败：重新登录未取得 SSO: {exc}") from exc
+    if not refreshed:
+        raise RegistrationRiskDenied("注册期风控恢复失败：重新登录返回的 SSO 为空")
+    if refreshed == old_sso:
+        _risk_log("重新登录返回相同 SSO，仍继续尝试 OAuth")
+    else:
+        _risk_log("已通过重新登录刷新 SSO，继续 OAuth")
+    return refreshed
 
 
 def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> bool:
@@ -2287,11 +2316,18 @@ def run_registration(count):
                             log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
                             cancel_callback=controller.should_stop,
                         )
-                        ensure_sso_oauth_eligible(
+                        risk_state = ensure_sso_oauth_eligible(
                             sso,
                             email=email,
                             log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
                         )
+                        if risk_state.get("denied"):
+                            sso = refresh_sso_after_registration_risk(
+                                sso,
+                                email=email,
+                                password=current_attempt_password(profile),
+                                log_callback=lambda m: registration_log(f"[W{wid+1}] {m}"),
+                            )
                         if config.get("enable_nsfw", True):
                             nsfw_ok, nsfw_msg = enable_nsfw_for_token(
                                 sso,
@@ -2598,7 +2634,16 @@ def run_registration(count):
                 sso = wait_for_sso_cookie(
                     log_callback=registration_log, cancel_callback=controller.should_stop
                 )
-                ensure_sso_oauth_eligible(sso, email=email, log_callback=registration_log)
+                risk_state = ensure_sso_oauth_eligible(
+                    sso, email=email, log_callback=registration_log
+                )
+                if risk_state.get("denied"):
+                    sso = refresh_sso_after_registration_risk(
+                        sso,
+                        email=email,
+                        password=current_attempt_password(profile),
+                        log_callback=registration_log,
+                    )
                 if config.get("enable_nsfw", True):
                     registration_log("[*] 6. 开启 NSFW")
                     nsfw_ok, nsfw_msg = enable_nsfw_for_token(
