@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-import re
 import secrets
 import string
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from backend.mailbox.utilities import extract_verification_code, generate_username, pick_list_payload
+from backend.mailbox.utilities import (
+    extract_verification_code,
+    generate_username,
+    pick_list_payload,
+    strip_html,
+)
 
 HttpGet = Callable[..., Any]
 HttpPost = Callable[..., Any]
@@ -366,7 +370,7 @@ def wait_for_code(
             if isinstance(html_list, str):
                 html_list = [html_list]
             for h in html_list:
-                parts.append(re.sub(r"<[^>]+>", " ", h))
+                parts.append(strip_html(h))
             subject = str(msg.get("subject", "") or "")
             combined = "\n".join(parts)
             try:
@@ -388,7 +392,7 @@ def wait_for_code(
                 if isinstance(html_list2, str):
                     html_list2 = [html_list2]
                 for h in html_list2:
-                    combined += "\n" + re.sub(r"<[^>]+>", " ", h)
+                    combined += "\n" + strip_html(h)
                 if not subject:
                     subject = str(detail.get("subject", "") or "")
             except Exception as exc:

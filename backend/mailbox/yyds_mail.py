@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import re
 import secrets
 import string
 import time
 from typing import Any, Callable, List, Optional
 
-from backend.mailbox.utilities import extract_verification_code
+from backend.mailbox.utilities import extract_verification_code, strip_html
 
 API_BASE = "https://maliapi.215.im/v1"
 HttpGet = Callable[..., Any]
@@ -202,7 +201,7 @@ def wait_for_code(
                 parts.append(text_body)
             html_list = detail.get("html") or []
             for h in html_list:
-                parts.append(re.sub(r"<[^>]+>", " ", h))
+                parts.append(strip_html(h))
             combined = "\n".join(parts)
             subject = detail.get("subject", "")
             if log_callback:

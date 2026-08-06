@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import re
 import secrets
 import string
 from typing import Any, Callable, Dict, List, Optional
+
+from backend.mailbox.utilities import strip_html
 
 API_BASE_DEFAULT = "https://api.duckmail.sbs"
 
@@ -253,7 +254,7 @@ def wait_for_code(
                 html_list = [html_list]
             for h in html_list:
                 if isinstance(h, str):
-                    parts.append(re.sub(r"<[^>]+>", " ", h))
+                    parts.append(strip_html(h))
             combined = "\n".join(parts)
             subject = str(detail.get("subject", "") or "")
             if log_callback:

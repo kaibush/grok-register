@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import re
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from backend.mailbox.utilities import extract_verification_code, generate_username
+from backend.mailbox.utilities import extract_verification_code, generate_username, strip_html
 
 HttpGet = Callable[..., Any]
 HttpPost = Callable[..., Any]
@@ -286,10 +285,10 @@ def wait_for_code(
                         parts.append(value)
                 html_value = msg.get("html") or msg.get("htmlContent") or msg.get("html_content")
                 if isinstance(html_value, str):
-                    parts.append(re.sub(r"<[^>]+>", " ", html_value))
+                    parts.append(strip_html(html_value))
                 elif isinstance(html_value, list):
                     parts.extend(
-                        re.sub(r"<[^>]+>", " ", item)
+                        strip_html(item)
                         for item in html_value
                         if isinstance(item, str)
                     )
@@ -297,7 +296,7 @@ def wait_for_code(
                 if log_callback:
                     log_callback(f"[Debug] CloudMail 收到邮件: {subject}")
                 combined = "\n".join(parts)
-                plain_text = re.sub(r"<[^>]+>", " ", combined)
+                plain_text = strip_html(combined)
                 code = extract_verification_code(f"{combined}\n{plain_text}", subject)
                 if code:
                     if log_callback:
