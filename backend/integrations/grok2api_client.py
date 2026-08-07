@@ -18,6 +18,16 @@ class Grok2APIClient:
 
     LOGIN_PATH = "/api/admin/v1/auth/login"
     IMPORT_PATH = "/api/admin/v1/accounts/import"
+    IMPORT_PATHS = {
+        "grok_build": IMPORT_PATH,
+        "grok_web": "/api/admin/v1/accounts/web/import",
+        "grok_console": "/api/admin/v1/accounts/console/import",
+    }
+    PROVIDER_LABELS = {
+        "grok_build": "Grok Build",
+        "grok_web": "Grok Web",
+        "grok_console": "Grok Console",
+    }
     CONFIG_KEYS = (
         "grok2api_remote_url",
         "grok2api_remote_username",
@@ -151,6 +161,32 @@ class Grok2APIClient:
             raise Grok2APIImportError(f"Grok2API 授权 JSON 无效: {exc}") from exc
         return path, content
 
+    @classmethod
+    def _auth_document_provider(cls, path: Path, content: bytes) -> str:
+        """识别导入文档所属 Provider，兼容旧 Build accounts 包装格式。"""
+        try:
+            payload = json.loads(content.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise Grok2APIImportError(f"{path.name} 不是有效的 Grok2API 授权 JSON") from exc
+        if not isinstance(payload, dict):
+            raise Grok2APIImportError(f"{path.name} 缺少 Grok2API provider")
+        provider = str(payload.get("provider") or "").strip().lower()
+        if not provider:
+            accounts = payload.get("accounts")
+            if isinstance(accounts, list):
+                providers = {
+                    str(account.get("provider") or "").strip().lower()
+                    for account in accounts
+                    if isinstance(account, dict) and str(account.get("provider") or "").strip()
+                }
+                if len(providers) == 1:
+                    provider = providers.pop()
+        if provider not in cls.IMPORT_PATHS:
+            raise Grok2APIImportError(
+                f"{path.name} 的 provider 无效或不受支持: {provider or 'missing'}"
+            )
+        return provider
+
     def login(self, *, force: bool = False) -> str:
         """使用管理员账号密码登录；同一实例默认复用已取得的令牌。"""
         if self._access_token and not force:
@@ -176,17 +212,49 @@ class Grok2APIClient:
         self._access_token = token
         return token
 
-    def import_auth_file(self, file_path: str | Path) -> Dict[str, Any]:
-        """自动登录并将一个 grok_build JSON 导入远程管理端。"""
-        path, content = self._load_auth_document(file_path)
+    def import_auth_files(self, file_paths: Iterable[str | Path]) -> Dict[str, Any]:
+        """自动登录并按 Provider 路由一组 Grok2API 授权 JSON。"""
+        grouped: Dict[str, list[tuple[Path, bytes]]] = {}
+        for file_path in file_paths:
+            path, content = self._load_auth_document(file_path)
+            provider = self._auth_document_provider(path, content)
+            grouped.setdefault(provider, []).append((path, content))
+        if not grouped:
+            raise Grok2APIImportError("没有可导入的 Grok2API 授权 JSON 文件")
         token = self.login()
+        aggregate: Dict[str, Any] = {
+            "created": 0,
+            "updated": 0,
+            "skipped": 0,
+            "synced": 0,
+            "syncFailed": 0,
+            "providers": {},
+        }
+        for provider in self.IMPORT_PATHS:
+            documents = grouped.get(provider)
+            if not documents:
+                continue
+            result = self._import_provider_documents(provider, documents, token)
+            aggregate["providers"][provider] = result
+            for key in ("created", "updated", "skipped", "synced", "syncFailed"):
+                try:
+                    aggregate[key] += int(result.get(key, 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+        return aggregate
+
+    def _import_provider_documents(
+        self, provider: str, documents: list[tuple[Path, bytes]], token: str
+    ) -> Dict[str, Any]:
+        """上传同一 Provider 的文件到其 Grok2API 专用导入接口。"""
         multipart = CurlMime()
-        multipart.addpart(
-            name="files",
-            filename=path.name,
-            content_type="application/json",
-            data=content,
-        )
+        for path, content in documents:
+            multipart.addpart(
+                name="files",
+                filename=path.name,
+                content_type="application/json",
+                data=content,
+            )
         response = None
         try:
             request_kwargs = {
@@ -201,20 +269,22 @@ class Grok2APIClient:
             }
             try:
                 response = self.session.post(
-                    f"{self.base_url}{self.IMPORT_PATH}", **request_kwargs
+                    f"{self.base_url}{self.IMPORT_PATHS[provider]}", **request_kwargs
                 )
             except TypeError as exc:
                 if "multipart" not in str(exc):
                     raise
                 request_kwargs.pop("multipart", None)
-                request_kwargs["files"] = {
-                    "files": (path.name, content, "application/json")
-                }
+                request_kwargs["files"] = [
+                    ("files", (path.name, content, "application/json"))
+                    for path, content in documents
+                ]
                 response = self.session.post(
-                    f"{self.base_url}{self.IMPORT_PATH}", **request_kwargs
+                    f"{self.base_url}{self.IMPORT_PATHS[provider]}", **request_kwargs
                 )
         except Exception as exc:
-            raise Grok2APIImportError(f"连接 Grok2API 导入接口失败: {exc}") from exc
+            label = self.PROVIDER_LABELS[provider]
+            raise Grok2APIImportError(f"连接 {label} 导入接口失败: {exc}") from exc
         finally:
             if response is None:
                 multipart.close()
@@ -222,7 +292,9 @@ class Grok2APIClient:
         try:
             if int(getattr(response, "status_code", 0) or 0) != 200:
                 raise Grok2APIImportError(
-                    self._response_error(response, "Grok2API 导入失败")
+                    self._response_error(
+                        response, f"{self.PROVIDER_LABELS[provider]} 导入失败"
+                    )
                 )
             completed: Dict[str, Any] | None = None
             for event, payload in self._iter_sse_events(response.iter_lines()):
@@ -231,14 +303,14 @@ class Grok2APIClient:
                         str(
                             payload.get("message")
                             or payload.get("code")
-                            or "Grok2API 导入失败"
+                            or f"{self.PROVIDER_LABELS[provider]} 导入失败"
                         )
                     )
                 if event == "complete":
                     completed = payload
             if completed is None:
                 raise Grok2APIImportError(
-                    "Grok2API 导入响应未返回 complete 事件"
+                    f"{self.PROVIDER_LABELS[provider]} 导入响应未返回 complete 事件"
                 )
             return completed
         finally:
@@ -247,6 +319,10 @@ class Grok2APIClient:
             except Exception:
                 pass
             multipart.close()
+
+    def import_auth_file(self, file_path: str | Path) -> Dict[str, Any]:
+        """兼容旧调用：导入一个 Grok2API Provider JSON。"""
+        return self.import_auth_files([file_path])
 
     def close(self) -> None:
         """释放客户端自行创建的 HTTP 会话。"""

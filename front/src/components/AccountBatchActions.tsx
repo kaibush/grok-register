@@ -68,7 +68,7 @@ export function AccountBatchActions({
               onClick={() => onExport("grok2api")}
             >
               <Archive className="h-4 w-4" aria-hidden="true" />
-              导出 Grok2API JSON 压缩包
+              导出 Grok2API Build JSON 压缩包
             </button>
             <button
               type="button"

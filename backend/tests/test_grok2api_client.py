@@ -132,6 +132,39 @@ class Grok2APIClientTests(unittest.TestCase):
             with self.assertRaisesRegex(Grok2APIImportError, "fixture failed"):
                 client.import_auth_file(path)
 
+    def test_import_auth_files_routes_each_provider_to_its_endpoint(self):
+        session = FakeSession(
+            [
+                FakeResponse(payload={"data": {"tokens": {"accessToken": "fresh-token"}}}),
+                FakeResponse(lines=[b"event: complete", b'data: {"created":1,"synced":1}', b""]),
+                FakeResponse(lines=[b"event: complete", b'data: {"created":1,"synced":1}', b""]),
+                FakeResponse(lines=[b"event: complete", b'data: {"created":1,"synced":1}', b""]),
+            ]
+        )
+        client = Grok2APIClient(
+            "https://example.test", "admin", "secret", session=session
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = []
+            for provider in ("grok_build", "grok_web", "grok_console"):
+                path = root / f"{provider}.json"
+                path.write_text(json.dumps({"provider": provider}), encoding="utf-8")
+                paths.append(path)
+            result = client.import_auth_files(paths)
+        self.assertEqual(result["created"], 3)
+        self.assertEqual(len(session.calls), 4)
+        self.assertIn("multipart", session.calls[1][1])
+        self.assertEqual(
+            [call[0] for call in session.calls[1:]],
+            [
+                "https://example.test/api/admin/v1/accounts/import",
+                "https://example.test/api/admin/v1/accounts/web/import",
+                "https://example.test/api/admin/v1/accounts/console/import",
+            ],
+        )
+        self.assertEqual(set(result["providers"]), {"grok_build", "grok_web", "grok_console"})
+
     def test_context_manager_closes_owned_session_only(self):
         external = FakeSession([])
         client = Grok2APIClient(

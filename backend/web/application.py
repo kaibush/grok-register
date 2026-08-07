@@ -508,6 +508,43 @@ def _find_account_auth_file(record: Dict[str, Any], raw_config: Dict[str, Any], 
     raise FileNotFoundError(f"未找到该账号对应的 {label} JSON")
 
 
+def _find_account_grok2api_auth_files(
+    record: Dict[str, Any], raw_config: Dict[str, Any]
+) -> List[Path]:
+    """获取 Build 及同一 SSO 生成的 Web/Console 导入文件。
+
+    老记录只有 Build 文件时保留旧行为，避免重试导入被新文件规则阻断。
+    """
+    build_path = _find_account_auth_file(record, raw_config, "grok2api")
+    roots = [
+        _auth_directory(raw_config.get("grok2api_auth_dir"), "data/grok2api_auth"),
+        DATA_DIR / "grok2api_auth",
+        build_path.parent,
+    ]
+    roots = list(dict.fromkeys(path.resolve() for path in roots))
+    safe = _safe_auth_identifier(str(record.get("email") or ""))
+    paths = [build_path]
+    seen = {str(build_path.resolve())}
+    for provider in ("web", "console"):
+        filename = f"g2a-{safe}-{provider}.json"
+        for root in roots:
+            candidate = root / filename
+            try:
+                normalized = candidate.resolve()
+            except OSError:
+                continue
+            if (
+                str(normalized) in seen
+                or not _path_within(normalized, roots)
+                or not normalized.is_file()
+            ):
+                continue
+            paths.append(normalized)
+            seen.add(str(normalized))
+            break
+    return paths
+
+
 def _load_account_auth_json(record: Dict[str, Any], raw_config: Dict[str, Any], kind: str) -> Dict[str, Any]:
     path = _find_account_auth_file(record, raw_config, kind)
     try:
@@ -808,7 +845,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/accounts/{account_id}/grok2api/import")
     def api_account_grok2api_import(account_id: int) -> Dict[str, Any]:
-        """把已生成的 grok_build JSON 导入配置的远程 Grok2API。"""
+        """把账号的 Build/Web/Console 导入文件导入配置的远程 Grok2API。"""
         from backend.integrations.grok2api_client import (
             Grok2APIClient,
             Grok2APIImportError,
@@ -826,14 +863,14 @@ def create_app() -> FastAPI:
                 detail="请先在系统设置完整配置 Grok2API API 地址、管理员账号和密码",
             )
         try:
-            path = _find_account_auth_file(rows[0], gr.config, "grok2api")
+            paths = _find_account_grok2api_auth_files(rows[0], gr.config)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
             with Grok2APIClient.from_config(gr.config) as client:
-                result = client.import_auth_file(path)
+                result = client.import_auth_files(paths)
         except Grok2APIImportError as exc:
             store.update_remote_import_status(
                 account_id,
