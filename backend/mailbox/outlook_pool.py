@@ -15,7 +15,7 @@ from http.cookies import SimpleCookie
 from typing import Any, Callable, Iterable, List, Optional
 from urllib.parse import urlsplit
 
-from backend.mailbox.utilities import extract_verification_code
+from backend.mailbox.utilities import extract_verification_code, strip_html
 
 HttpGet = Callable[..., Any]
 SessionFactory = Callable[[], Any]
@@ -718,11 +718,11 @@ def mail_text(message: Any) -> str:
                 parts.append(content)
     html_value = message.get("html")
     if isinstance(html_value, str):
-        parts.append(re.sub(r"<[^>]+>", " ", html_value))
+        parts.append(strip_html(html_value))
     elif isinstance(html_value, list):
         for item in html_value:
             if isinstance(item, str):
-                parts.append(re.sub(r"<[^>]+>", " ", item))
+                parts.append(strip_html(item))
     return "\n".join(parts)
 
 

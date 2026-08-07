@@ -595,6 +595,11 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
             if log_callback:
                 log_callback(f"[*] 浏览器模式: {'无头' if opts['headless'] else '有头'}")
                 log_callback(f"[*] 浏览器语言: {opts['locale']}")
+                proxy_options = opts.get("proxy") if isinstance(opts.get("proxy"), dict) else {}
+                proxy_server = str(proxy_options.get("server") or "").strip()
+                log_callback(
+                    f"[*] Camoufox 网络: {'代理 ' + proxy_server if proxy_server else '直连（未配置代理）'}"
+                )
             if log_callback and profile_dir:
                 log_callback(f"[Debug] 当前浏览器资料目录: {profile_dir}")
             if log_callback and attempt > 1:

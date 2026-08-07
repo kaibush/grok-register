@@ -227,6 +227,7 @@ def check_email_api(provider: str, config: dict, http_get: Callable, http_post: 
                         json={"password": password, "next": "/"},
                         headers={"Content-Type": "application/json"},
                         timeout=12,
+                        proxies={},
                     )
                     if resp.status_code >= 400:
                         return "邮箱API", False, f"OutlookEmail 网页登录 HTTP {resp.status_code}"
@@ -239,6 +240,7 @@ def check_email_api(provider: str, config: dict, http_get: Callable, http_post: 
                     f"{base}/api/temp-emails",
                     headers={"Cookie": cookie},
                     timeout=12,
+                    proxies={},
                 )
                 if resp.status_code >= 400:
                     return "邮箱API", False, f"OutlookEmail temp HTTP {resp.status_code}"
@@ -258,6 +260,7 @@ def check_email_api(provider: str, config: dict, http_get: Callable, http_post: 
                 headers={"X-API-Key": key},
                 params=params,
                 timeout=12,
+                proxies={},
             )
             if resp.status_code >= 400:
                 return "邮箱API", False, f"OutlookEmail accounts HTTP {resp.status_code}"

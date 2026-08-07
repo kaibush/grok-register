@@ -2,7 +2,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from backend.integrations import grok2api_client
 from backend.integrations.grok2api_client import Grok2APIClient, Grok2APIImportError
 
 
@@ -38,6 +40,17 @@ class FakeSession:
 
 
 class Grok2APIClientTests(unittest.TestCase):
+    def test_owned_session_does_not_inherit_environment_proxy(self):
+        session = mock.Mock()
+        with mock.patch.object(
+            grok2api_client.requests,
+            "Session",
+            return_value=session,
+        ) as factory:
+            client = Grok2APIClient("https://example.test", "admin", "secret")
+        factory.assert_called_once_with(trust_env=False)
+        self.assertIs(client.session, session)
+
     def test_from_config_validates_and_builds_client(self):
         config = {
             "grok2api_remote_url": "https://example.test/",

@@ -1373,18 +1373,20 @@ def upload_cpa_auth_remote(
     name = cpa_auth_filename(record)
     url = f"{base}/v0/management/auth-files"
     proxies = {"http": proxy, "https": proxy} if proxy else None
-    resp = requests.post(
-        url,
-        params={"name": name},
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        },
-        data=json.dumps(record, ensure_ascii=False).encode("utf-8"),
-        timeout=timeout,
-        proxies=proxies,
-        impersonate="chrome",
-    )
+    # 不继承 HTTP_PROXY/HTTPS_PROXY；调用方如确实需要代理，必须显式传 proxy。
+    with requests.Session(trust_env=False) as session:
+        resp = session.post(
+            url,
+            params={"name": name},
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps(record, ensure_ascii=False).encode("utf-8"),
+            timeout=timeout,
+            proxies=proxies,
+            impersonate="chrome",
+        )
     if resp.status_code >= 400:
         body = (resp.text or "").strip()
         if len(body) > 300:

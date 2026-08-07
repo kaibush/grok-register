@@ -42,7 +42,8 @@ class Grok2APIClient:
         self.login_timeout = float(login_timeout)
         self.import_timeout = float(import_timeout)
         self._owns_session = session is None
-        self.session = session or requests.Session()
+        # Grok2API 是独立管理服务，不继承项目代理或环境代理。
+        self.session = session or requests.Session(trust_env=False)
         self._access_token = ""
 
     @classmethod

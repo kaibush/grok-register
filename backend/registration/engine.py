@@ -19,6 +19,7 @@ import string
 import json
 import base64
 import traceback
+from urllib.parse import urlsplit
 
 from playwright._impl._errors import TargetClosedError as PageDisconnectedError
 from curl_cffi import requests
@@ -90,6 +91,8 @@ TRACEBACK_LOG_MAX_CHARS = 16_000
 
 _repository = None
 _repository_lock = threading.Lock()
+_network_route_log_lock = threading.Lock()
+_network_route_log_keys = set()
 
 
 def current_exception_traceback(max_chars=TRACEBACK_MAX_CHARS):
@@ -582,6 +585,37 @@ def get_proxies():
     return {}
 
 
+def reset_network_route_logs():
+    with _network_route_log_lock:
+        _network_route_log_keys.clear()
+
+
+def _log_actual_http_route(method, url, *, proxies=None, proxy=""):
+    """记录实际请求的接口和路由；相同方法/接口/路由只记录一次。"""
+    parsed = urlsplit(str(url or ""))
+    display_url = (
+        f"{parsed.scheme}://{parsed.netloc}{parsed.path or '/'}"
+        if parsed.netloc
+        else str(url or "")
+    )
+    proxy_value = str(proxy or "").strip()
+    if not proxy_value and isinstance(proxies, dict):
+        proxy_value = str(
+            proxies.get(parsed.scheme)
+            or proxies.get("all")
+            or proxies.get("https")
+            or proxies.get("http")
+            or ""
+        ).strip()
+    route = f"代理 {proxy_value}" if proxy_value else "直连（不使用代理）"
+    key = (str(method or "GET").upper(), display_url, route)
+    with _network_route_log_lock:
+        if key in _network_route_log_keys:
+            return
+        _network_route_log_keys.add(key)
+    registration_log(f"[*] [网络] {key[0]} {display_url} -> {route}")
+
+
 def get_duckmail_api_base():
     return duckmail_provider.normalize_base(str(config.get("duckmail_api_base", "") or ""))
 
@@ -741,14 +775,14 @@ def disable_outlookemail_after_cpa_success(email, cpa_detail=None, log_callback=
             )
         result = outlookemail_provider.disable_account(
             http_get,
-            requests.Session,
+            direct_http_session,
             get_outlookemail_api_base(),
             normalized_email,
             api_key=get_outlookemail_api_key(),
             group_id=str(config.get("outlookemail_group_id", "") or "").strip(),
             web_password=str(config.get("outlookemail_web_password", "") or ""),
             session_cookie=str(config.get("outlookemail_session_cookie", "") or "").strip(),
-            proxies=get_proxies(),
+            proxies={},
         )
         detail.update(
             status="success",
@@ -769,7 +803,7 @@ def disable_outlookemail_after_cpa_success(email, cpa_detail=None, log_callback=
 def outlookemail_get_email_and_token():
     return outlookemail_provider.acquire_email(
         http_get,
-        requests.Session,
+        direct_http_session,
         get_outlookemail_api_base(),
         api_key=get_outlookemail_api_key(),
         source=get_outlookemail_source(),
@@ -778,7 +812,7 @@ def outlookemail_get_email_and_token():
         session_cookie=str(config.get("outlookemail_session_cookie", "") or "").strip(),
         temp_tag_ids=str(config.get("outlookemail_temp_tag_ids", "") or ""),
         pick_mode=str(config.get("outlookemail_pick_mode", "random") or "random"),
-        proxies=get_proxies(),
+        proxies={},
         is_unavailable=_outlookemail_account_already_saved,
     )
 
@@ -793,7 +827,7 @@ def outlookemail_get_oai_code(
 ):
     return outlookemail_provider.wait_for_code(
         http_get,
-        requests.Session,
+        direct_http_session,
         get_outlookemail_api_base(),
         email,
         api_key=get_outlookemail_api_key(),
@@ -802,7 +836,7 @@ def outlookemail_get_oai_code(
         session_cookie=str(config.get("outlookemail_session_cookie", "") or "").strip(),
         folder=str(config.get("outlookemail_folder", "all") or "all"),
         top=config.get("outlookemail_top", 10),
-        proxies=get_proxies(),
+        proxies={},
         timeout=timeout,
         poll_interval=poll_interval,
         min_received_at=min_received_at,
@@ -1124,7 +1158,15 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                 auth_errors.append(f"CPA 本地失败: {local_exc}")
         if remote_url:
             try:
-                name = _s2cpa.upload_cpa_auth_remote(remote_url, management_key, record, proxy=proxy)
+                # CPA 管理端通常是本机或内网服务，远程上传固定直连；
+                # config.proxy 只用于 xAI/Grok 的 SSO→token/Auth 链路。
+                _cpa_log(f"CPA 远程上传网络: 直连 -> {remote_url.rstrip('/')}")
+                name = _s2cpa.upload_cpa_auth_remote(
+                    remote_url,
+                    management_key,
+                    record,
+                    proxy="",
+                )
                 _cpa_log(f"已上传 CPA 远程 {remote_url.rstrip('/')}/.../{name}")
                 wrote_ok = True
                 auth_entries.append(f"CPA 远程: {remote_url.rstrip('/')}/.../{name}")
@@ -1147,6 +1189,10 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                 auth_entries.append(f"Grok2API: {gpath}")
                 if g2a_remote_configured and g2a_auto_import:
                     try:
+                        _cpa_log(
+                            "Grok2API 远程导入网络: 直连 -> "
+                            f"{str(config.get('grok2api_remote_url') or '').rstrip('/')}"
+                        )
                         with _grok2api.Grok2APIClient.from_config(config) as client:
                             remote_result = client.import_auth_file(gpath)
                         imported_at = RegistrationRepository.now_text()
@@ -1219,52 +1265,46 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
 def _build_request_kwargs(**kwargs):
     request_kwargs = dict(kwargs)
     proxies = request_kwargs.pop("proxies", None)
-    if proxies is None:
-        proxies = get_proxies()
-    if proxies:
-        request_kwargs["proxies"] = proxies
+    # 通用 HTTP 默认直连。只有 xAI/Grok 调用方可以显式传入 get_proxies()。
+    request_kwargs["proxies"] = proxies or {}
     request_kwargs.setdefault("timeout", 15)
     return request_kwargs
 
 
+def _http_request(method, url, **kwargs):
+    kwargs.pop("_allow_direct_fallback", None)
+    with direct_http_session() as session:
+        return session.request(method, url, **_build_request_kwargs(**kwargs))
+
+
 def http_get(url, **kwargs):
-    allow_direct_fallback = bool(kwargs.pop("_allow_direct_fallback", True))
-    try:
-        return requests.get(url, **_build_request_kwargs(**kwargs))
-    except Exception as exc:
-        err = str(exc)
-        # 默认代理不可用时回退直连；注册页预检可显式关闭该行为。
-        if allow_direct_fallback and (
-            "127.0.0.1 port 7890" in err or "Could not connect to server" in err
-        ):
-            retry_kwargs = dict(kwargs)
-            retry_kwargs["proxies"] = {}
-            return requests.get(url, **_build_request_kwargs(**retry_kwargs))
-        raise
+    return _http_request("GET", url, **kwargs)
 
 
 def http_post(url, **kwargs):
-    try:
-        return requests.post(url, **_build_request_kwargs(**kwargs))
-    except Exception as exc:
-        err = str(exc)
-        if "127.0.0.1 port 7890" in err or "Could not connect to server" in err:
-            retry_kwargs = dict(kwargs)
-            retry_kwargs["proxies"] = {}
-            return requests.post(url, **_build_request_kwargs(**retry_kwargs))
-        raise
+    return _http_request("POST", url, **kwargs)
 
 
 def http_delete(url, **kwargs):
-    try:
-        return requests.delete(url, **_build_request_kwargs(**kwargs))
-    except Exception as exc:
-        err = str(exc)
-        if "127.0.0.1 port 7890" in err or "Could not connect to server" in err:
-            retry_kwargs = dict(kwargs)
-            retry_kwargs["proxies"] = {}
-            return requests.delete(url, **_build_request_kwargs(**retry_kwargs))
-        raise
+    return _http_request("DELETE", url, **kwargs)
+
+
+def direct_http_session():
+    """创建不读取项目代理或环境代理的 HTTP 会话。"""
+    session = requests.Session(trust_env=False)
+    raw_request = session.request
+
+    def logged_request(method, url, *args, **kwargs):
+        _log_actual_http_route(
+            method,
+            url,
+            proxies=kwargs.get("proxies"),
+            proxy=kwargs.get("proxy", ""),
+        )
+        return raw_request(method, url, *args, **kwargs)
+
+    session.request = logged_request
+    return session
 
 
 def raise_if_cancelled(cancel_callback=None):
@@ -2205,6 +2245,7 @@ def registration_log(message):
 
 def run_registration(count):
     controller = RegistrationStopController()
+    reset_network_route_logs()
     if get_email_provider() == "outlookemail":
         reset_outlookemail_runtime_state()
 
