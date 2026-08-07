@@ -203,9 +203,9 @@ DEFAULT_CONFIG = {
     # 远程 CPA：通过 Management API POST /v0/management/auth-files 上传
     "cpa_remote_url": "",
     "cpa_management_key": "",
-    # Grok2API grok_build 导入目录
+    # Grok2API Build/Web/Console 导入目录
     "grok2api_auth_dir": "data/grok2api_auth",
-    # 远程 Grok2API 管理端：登录后通过 SSE 导入 grok_build JSON
+    # 远程 Grok2API 管理端：登录后通过 SSE 导入 Build/Web/Console JSON
     "grok2api_remote_url": "",
     "grok2api_remote_username": "",
     "grok2api_remote_password": "",
@@ -1181,12 +1181,21 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                 _set_result(cpa_remote_status="failed", cpa_remote_error=str(remote_exc))
         if g2a_dir:
             try:
-                gpath = _s2cpa.write_grok2api_auth(_s2cpa.Path(g2a_dir), token, email=email)
-                _cpa_log(f"已写入 Grok2API {gpath}")
+                gpaths = _s2cpa.write_grok2api_auth_bundle(
+                    _s2cpa.Path(g2a_dir), token, sso, email=email
+                )
+                gpath = gpaths["build"]
+                _cpa_log(
+                    "已写入 Grok2API Build/Web/Console "
+                    f"({gpaths['build'].name}, {gpaths['web'].name}, {gpaths['console'].name})"
+                )
                 wrote_ok = True
                 grok2api_auth_path_value = str(gpath)
                 auth_path_value = auth_path_value or str(gpath)
-                auth_entries.append(f"Grok2API: {gpath}")
+                auth_entries.extend(
+                    f"Grok2API {provider.title()}: {path}"
+                    for provider, path in gpaths.items()
+                )
                 if g2a_remote_configured and g2a_auto_import:
                     try:
                         _cpa_log(
@@ -1194,7 +1203,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                             f"{str(config.get('grok2api_remote_url') or '').rstrip('/')}"
                         )
                         with _grok2api.Grok2APIClient.from_config(config) as client:
-                            remote_result = client.import_auth_file(gpath)
+                            remote_result = client.import_auth_files(gpaths.values())
                         imported_at = RegistrationRepository.now_text()
                         remote_status = (
                             "partial"

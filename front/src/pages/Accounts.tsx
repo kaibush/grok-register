@@ -233,7 +233,7 @@ function AccountDetails({
     ["账号文件", detail.account_file],
     ["Auth 路径", detail.auth_path],
     ["CPA JSON 路径", detail.cpa_auth_path],
-    ["Grok2API JSON 路径", detail.grok2api_auth_path],
+    ["Grok2API Build JSON 路径", detail.grok2api_auth_path],
     ["CPA 远程入库", remoteImportLabel(detail.cpa_remote_status)],
     ["CPA 远程入库时间", detail.cpa_remote_imported_at],
     ["CPA 远程错误", detail.cpa_remote_error],
@@ -381,11 +381,11 @@ function AccountDetails({
             ) : (
               <Copy className="h-4 w-4" aria-hidden="true" />
             )}
-            复制 Grok2API JSON
+            复制 Grok2API Build JSON
           </Button>
           <Button variant="outline" onClick={() => onDownloadAuthJson("grok2api")}>
             <Download className="h-4 w-4" aria-hidden="true" />
-            下载 Grok2API JSON
+            下载 Grok2API Build JSON
           </Button>
         </div>
       </div>
@@ -625,7 +625,7 @@ export function AccountsPage() {
     try {
       const result = await api.accountAuthJson(detail.id, kind);
       const ok = await copyText(result.content);
-      const label = kind === "cpa" ? "CPA JSON" : "Grok2API JSON";
+      const label = kind === "cpa" ? "CPA JSON" : "Grok2API Build JSON";
       showToast(ok ? `已复制${label}` : `${label}复制失败`, ok ? "success" : "error");
     } catch (err: any) {
       showToast(err.message || "读取授权 JSON 失败", "error");
@@ -641,14 +641,14 @@ export function AccountsPage() {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    showToast(`已提交${kind === "cpa" ? "CPA" : "Grok2API"}导出`, "success");
+    showToast(`已提交${kind === "cpa" ? "CPA" : "Grok2API Build"}导出`, "success");
   };
 
   const onDownloadAuthJson = (kind: "cpa" | "grok2api") => {
     if (!detail) return;
     const available = kind === "cpa" ? detail.cpa_auth_available : detail.grok2api_auth_available;
     if (!available) {
-      showToast(`${kind === "cpa" ? "CPA" : "Grok2API"} 文件不存在`, "error");
+      showToast(`${kind === "cpa" ? "CPA" : "Grok2API Build"} 文件不存在`, "error");
       return;
     }
     startAuthDownload(detail.id, kind);
@@ -766,8 +766,8 @@ export function AccountsPage() {
       const syncFailed = result.syncFailed || 0;
       showToast(
         syncFailed
-          ? `Grok2API 已入库，但远程同步失败 ${syncFailed} 个`
-          : `Grok2API 导入完成：新增 ${result.created || 0}，更新 ${result.updated || 0}`,
+          ? `Grok2API 三类账号已入库，但远程同步失败 ${syncFailed} 个`
+          : `Grok2API Build/Web/Console 导入完成：新增 ${result.created || 0}，更新 ${result.updated || 0}`,
         syncFailed ? "error" : "success"
       );
     } catch (err: any) {
@@ -808,7 +808,7 @@ export function AccountsPage() {
     const importing = grok2apiImportingId === item.id;
     const exportEntry = (kind: "cpa" | "grok2api") => {
       const available = kind === "cpa" ? item.cpa_auth_available : item.grok2api_auth_available;
-      const label = kind === "cpa" ? "下载 CPA JSON" : "下载 Grok2API JSON";
+      const label = kind === "cpa" ? "下载 CPA JSON" : "下载 Grok2API Build JSON";
       const content = (
         <>
           <Download className="h-4 w-4" aria-hidden="true" />
@@ -846,7 +846,7 @@ export function AccountsPage() {
             role="menuitem"
             className="flex min-h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-45"
             disabled={importing || !item.grok2api_auth_available}
-            title={!item.grok2api_auth_available ? "Grok2API JSON 文件不存在" : undefined}
+            title={!item.grok2api_auth_available ? "Grok2API Build JSON 文件不存在" : undefined}
             onClick={() => {
               setMoreMenu(null);
               void onImportGrok2API(item);
@@ -857,7 +857,7 @@ export function AccountsPage() {
             ) : (
               <UploadCloud className="h-4 w-4" aria-hidden="true" />
             )}
-            {importing ? "正在导入 Grok2API" : "导入到 Grok2API"}
+            {importing ? "正在导入 Build/Web/Console" : "导入 Build/Web/Console"}
           </button>
         ) : null}
         <div className="my-1 border-t" />

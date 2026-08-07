@@ -132,6 +132,32 @@ class Grok2APIClientTests(unittest.TestCase):
             with self.assertRaisesRegex(Grok2APIImportError, "fixture failed"):
                 client.import_auth_file(path)
 
+    def test_import_auth_files_uploads_multiple_provider_documents_once(self):
+        import_response = FakeResponse(
+            lines=[b"event: complete", b'data: {"created":3,"updated":0,"synced":3}', b""]
+        )
+        session = FakeSession(
+            [
+                FakeResponse(payload={"data": {"tokens": {"accessToken": "fresh-token"}}}),
+                import_response,
+            ]
+        )
+        client = Grok2APIClient(
+            "https://example.test", "admin", "secret", session=session
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = []
+            for provider in ("grok_build", "grok_web", "grok_console"):
+                path = root / f"{provider}.json"
+                path.write_text(json.dumps({"provider": provider}), encoding="utf-8")
+                paths.append(path)
+            result = client.import_auth_files(paths)
+        self.assertEqual(result["created"], 3)
+        self.assertEqual(len(session.calls), 2)
+        self.assertIn("multipart", session.calls[1][1])
+        self.assertTrue(import_response.closed)
+
     def test_context_manager_closes_owned_session_only(self):
         external = FakeSession([])
         client = Grok2APIClient(

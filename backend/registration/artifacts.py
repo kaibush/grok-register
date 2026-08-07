@@ -87,6 +87,8 @@ def collect_related_file_paths(
                 os.path.join(accounts_root, f"{safe_email}.txt"),
                 os.path.join(root, "cpa_auth", f"xai-{safe_email}.json"),
                 os.path.join(root, "grok2api_auth", f"g2a-{safe_email}.json"),
+                os.path.join(root, "grok2api_auth", f"g2a-{safe_email}-web.json"),
+                os.path.join(root, "grok2api_auth", f"g2a-{safe_email}-console.json"),
             ]
         )
 

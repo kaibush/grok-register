@@ -176,17 +176,20 @@ class Grok2APIClient:
         self._access_token = token
         return token
 
-    def import_auth_file(self, file_path: str | Path) -> Dict[str, Any]:
-        """自动登录并将一个 grok_build JSON 导入远程管理端。"""
-        path, content = self._load_auth_document(file_path)
+    def import_auth_files(self, file_paths: Iterable[str | Path]) -> Dict[str, Any]:
+        """自动登录并将一组 Grok2API Provider JSON 一次导入远程管理端。"""
+        documents = [self._load_auth_document(file_path) for file_path in file_paths]
+        if not documents:
+            raise Grok2APIImportError("没有可导入的 Grok2API 授权 JSON 文件")
         token = self.login()
         multipart = CurlMime()
-        multipart.addpart(
-            name="files",
-            filename=path.name,
-            content_type="application/json",
-            data=content,
-        )
+        for path, content in documents:
+            multipart.addpart(
+                name="files",
+                filename=path.name,
+                content_type="application/json",
+                data=content,
+            )
         response = None
         try:
             request_kwargs = {
@@ -207,9 +210,10 @@ class Grok2APIClient:
                 if "multipart" not in str(exc):
                     raise
                 request_kwargs.pop("multipart", None)
-                request_kwargs["files"] = {
-                    "files": (path.name, content, "application/json")
-                }
+                request_kwargs["files"] = [
+                    ("files", (path.name, content, "application/json"))
+                    for path, content in documents
+                ]
                 response = self.session.post(
                     f"{self.base_url}{self.IMPORT_PATH}", **request_kwargs
                 )
@@ -247,6 +251,10 @@ class Grok2APIClient:
             except Exception:
                 pass
             multipart.close()
+
+    def import_auth_file(self, file_path: str | Path) -> Dict[str, Any]:
+        """兼容旧调用：导入一个 Grok2API Provider JSON。"""
+        return self.import_auth_files([file_path])
 
     def close(self) -> None:
         """释放客户端自行创建的 HTTP 会话。"""

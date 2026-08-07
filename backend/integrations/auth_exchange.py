@@ -1347,6 +1347,69 @@ def write_grok2api_auth(auth_dir: Path, token: dict, email: str = "") -> Path:
     return path
 
 
+def _grok2api_sso_filename(entry: dict, provider: str, email: str = "") -> str:
+    """返回非 Build Provider 的 Grok2API 导入文件名。"""
+    ident = (
+        str(email or "").strip()
+        or str(entry.get("email") or "").strip()
+        or str(entry.get("name") or "").strip()
+        or secrets.token_hex(4)
+    )
+    safe = _safe_email_for_filename(ident)
+    return f"g2a-{safe}-{provider}.json"
+
+
+def sso_to_grok2api_account(sso: str, email: str = "", provider: str = "web") -> dict:
+    """将原始 SSO 包装为 Grok Web 或 Grok Console 的导入账号条目。"""
+    normalized = str(sso or "").strip()
+    if normalized.lower().startswith("sso="):
+        normalized = normalized[4:].strip()
+    if ";" in normalized:
+        normalized = normalized.split(";", 1)[0].strip()
+    if not normalized:
+        raise ValueError("Grok2API SSO 为空")
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider not in {"web", "console"}:
+        raise ValueError("Grok2API SSO Provider 必须是 web 或 console")
+    label = "Web" if normalized_provider == "web" else "Console"
+    return {
+        "name": str(email or "").strip() or f"Grok {label} account",
+        "email": str(email or "").strip(),
+        "sso_token": normalized,
+        **({"tier": "auto"} if normalized_provider == "web" else {}),
+    }
+
+
+def write_grok2api_sso_auth(
+    auth_dir: Path, sso: str, email: str = "", provider: str = "web"
+) -> Path:
+    """写出 Grok Web 或 Grok Console 的 SSO 导入 JSON。"""
+    normalized_provider = str(provider or "").strip().lower()
+    account = sso_to_grok2api_account(sso, email=email, provider=normalized_provider)
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    path = auth_dir / _grok2api_sso_filename(account, normalized_provider, email=email)
+    document = {"provider": f"grok_{normalized_provider}", "accounts": [account]}
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(tmp, path)
+    return path
+
+
+def write_grok2api_auth_bundle(
+    auth_dir: Path, token: dict, sso: str, email: str = ""
+) -> dict[str, Path]:
+    """从同一注册 SSO 生成 Build、Web、Console 三类导入文件。"""
+    return {
+        "build": write_grok2api_auth(auth_dir, token, email=email),
+        "web": write_grok2api_sso_auth(auth_dir, sso, email=email, provider="web"),
+        "console": write_grok2api_sso_auth(
+            auth_dir, sso, email=email, provider="console"
+        ),
+    }
+
+
 def upload_cpa_auth_remote(
     base_url: str,
     management_key: str,
