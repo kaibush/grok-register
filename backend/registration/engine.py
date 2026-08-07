@@ -1333,53 +1333,74 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None, result_out=None) -> b
                 _set_result(cpa_remote_status="failed", cpa_remote_error=str(remote_exc))
         if g2a_dir:
             try:
-                gpath = _s2cpa.write_grok2api_auth(_s2cpa.Path(g2a_dir), token, email=email)
-                _cpa_log(f"已写入 Grok2API {gpath}")
+                gpaths = _s2cpa.write_grok2api_auth_bundle(
+                    _s2cpa.Path(g2a_dir), token, email=email, sso=sso
+                )
+                gpath = gpaths["grok_build"]
+                _cpa_log(
+                    "已写入 Grok2API "
+                    + ", ".join(f"{kind}={path}" for kind, path in gpaths.items())
+                )
                 wrote_ok = True
                 grok2api_auth_path_value = str(gpath)
                 auth_path_value = auth_path_value or str(gpath)
-                auth_entries.append(f"Grok2API: {gpath}")
+                auth_entries.extend(f"Grok2API {kind}: {path}" for kind, path in gpaths.items())
                 if g2a_remote_configured and g2a_auto_import:
+                    _cpa_log(
+                        "Grok2API 远程导入网络: 直连 -> "
+                        f"{str(config.get('grok2api_remote_url') or '').rstrip('/')}"
+                    )
+                    remote_results = {}
+                    remote_errors = {}
                     try:
-                        _cpa_log(
-                            "Grok2API 远程导入网络: 直连 -> "
-                            f"{str(config.get('grok2api_remote_url') or '').rstrip('/')}"
-                        )
                         with _grok2api.Grok2APIClient.from_config(config) as client:
-                            remote_result = client.import_auth_file(gpath)
-                        imported_at = RegistrationRepository.now_text()
-                        remote_status = (
-                            "partial"
-                            if int(remote_result.get("syncFailed", 0) or 0) > 0
-                            else "success"
-                        )
-                        remote_error = (
-                            f"远程同步失败 {remote_result.get('syncFailed', 0)} 个"
-                            if remote_status == "partial"
-                            else ""
-                        )
-                        _cpa_log(
-                            "已导入远程 Grok2API "
-                            f"(created={remote_result.get('created', 0)}, "
-                            f"updated={remote_result.get('updated', 0)}, "
-                            f"synced={remote_result.get('synced', 0)})"
-                        )
-                        auth_entries.append(
-                            f"Grok2API 远程: {str(config.get('grok2api_remote_url') or '').rstrip('/')}"
-                        )
-                        _set_result(
-                            grok2api_remote_status=remote_status,
-                            grok2api_remote_imported_at=imported_at,
-                            grok2api_remote_error=remote_error,
-                            grok2api_remote_result=remote_result,
-                        )
-                    except Exception as remote_g2a_exc:
-                        _cpa_log(f"Grok2API 远程导入失败: {remote_g2a_exc}")
-                        auth_errors.append(f"Grok2API 远程失败: {remote_g2a_exc}")
-                        _set_result(
-                            grok2api_remote_status="failed",
-                            grok2api_remote_error=str(remote_g2a_exc),
-                        )
+                            for format_name, format_path in gpaths.items():
+                                try:
+                                    remote_result = client.import_auth_file(
+                                        format_path, format_name=format_name
+                                    )
+                                    remote_results[format_name] = remote_result
+                                    _cpa_log(
+                                        f"已导入远程 Grok2API {format_name} "
+                                        f"(created={remote_result.get('created', 0)}, "
+                                        f"updated={remote_result.get('updated', 0)}, "
+                                        f"synced={remote_result.get('synced', 0)})"
+                                    )
+                                except Exception as remote_g2a_exc:
+                                    remote_errors[format_name] = str(remote_g2a_exc)
+                                    _cpa_log(
+                                        f"Grok2API 远程导入失败 [{format_name}]: {remote_g2a_exc}"
+                                    )
+                    except Exception as remote_client_exc:
+                        remote_errors["client"] = str(remote_client_exc)
+                        _cpa_log(f"Grok2API 远程客户端初始化失败: {remote_client_exc}")
+                    imported_at = RegistrationRepository.now_text()
+                    sync_failed = sum(
+                        int(result.get("syncFailed", 0) or 0)
+                        for result in remote_results.values()
+                    )
+                    if remote_errors:
+                        remote_status = "partial" if remote_results else "failed"
+                    else:
+                        remote_status = "partial" if sync_failed else "success"
+                    remote_error_parts = [
+                        f"{format_name}: {error}"
+                        for format_name, error in remote_errors.items()
+                    ]
+                    auth_errors.extend(remote_error_parts)
+                    if sync_failed:
+                        remote_error_parts.append(f"远程同步失败 {sync_failed} 个")
+                    _set_result(
+                        grok2api_remote_status=remote_status,
+                        grok2api_remote_imported_at=imported_at if remote_results else "",
+                        grok2api_remote_error="; ".join(remote_error_parts),
+                        grok2api_remote_result={
+                            "formats": remote_results,
+                            "errors": remote_errors,
+                        },
+                    )
+                elif g2a_remote_configured:
+                    _set_result(grok2api_remote_status="ready")
             except Exception as g2a_exc:
                 _cpa_log(f"Grok2API 写入失败: {g2a_exc}")
                 auth_errors.append(f"Grok2API 失败: {g2a_exc}")

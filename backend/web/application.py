@@ -518,6 +518,49 @@ def _find_account_auth_file(record: Dict[str, Any], raw_config: Dict[str, Any], 
     raise FileNotFoundError(f"未找到该账号对应的 {label} JSON")
 
 
+def _find_account_grok2api_files(
+    record: Dict[str, Any], raw_config: Dict[str, Any]
+) -> Dict[str, Path]:
+    """发现账号对应的 Grok Build、Web、Console 三种导入文件。"""
+    roots = [
+        _auth_directory(raw_config.get("grok2api_auth_dir"), "data/grok2api_auth"),
+        DATA_DIR / "grok2api_auth",
+    ]
+    roots = list(dict.fromkeys(path.resolve() for path in roots))
+    safe = _safe_auth_identifier(str(record.get("email") or ""))
+    expected_names = {
+        "grok_build": f"g2a-{safe}.json",
+        "grok_web": f"grok-web-{safe}.json",
+        "grok_console": f"grok-console-{safe}.json",
+    }
+    recorded_paths: Dict[str, List[Path]] = {name: [] for name in expected_names}
+    direct = str(record.get("grok2api_auth_path") or "").strip()
+    if direct:
+        recorded_paths["grok_build"].append(Path(direct).expanduser())
+    prefixes = {f"Grok2API {name}:": name for name in expected_names}
+    for line in str(record.get("auth_info") or "").splitlines():
+        text = line.strip()
+        for prefix, name in prefixes.items():
+            if text.startswith(prefix):
+                recorded_paths[name].append(Path(text[len(prefix) :].strip()).expanduser())
+
+    found: Dict[str, Path] = {}
+    for name, expected in expected_names.items():
+        candidates = list(recorded_paths[name])
+        candidates.extend(root / expected for root in roots)
+        for candidate in candidates:
+            path = candidate if candidate.is_absolute() else APP_DIR / candidate
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if not _path_within(resolved, roots) or not resolved.is_file():
+                continue
+            found[name] = resolved
+            break
+    return found
+
+
 def _load_account_auth_json(record: Dict[str, Any], raw_config: Dict[str, Any], kind: str) -> Dict[str, Any]:
     path = _find_account_auth_file(record, raw_config, kind)
     try:
@@ -865,7 +908,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/accounts/{account_id}/grok2api/import")
     def api_account_grok2api_import(account_id: int) -> Dict[str, Any]:
-        """把已生成的 grok_build JSON 导入配置的远程 Grok2API。"""
+        """把已生成的三种 Grok2API JSON 导入配置的远程服务。"""
         from backend.integrations.grok2api_client import (
             Grok2APIClient,
             Grok2APIImportError,
@@ -883,14 +926,23 @@ def create_app() -> FastAPI:
                 detail="请先在系统设置完整配置 Grok2API API 地址、管理员账号和密码",
             )
         try:
-            path = _find_account_auth_file(rows[0], gr.config, "grok2api")
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            paths = _find_account_grok2api_files(rows[0], gr.config)
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not paths:
+            raise HTTPException(status_code=404, detail="未找到该账号对应的 Grok2API JSON")
+
+        results: Dict[str, Any] = {}
+        errors: Dict[str, str] = {}
         try:
             with Grok2APIClient.from_config(gr.config) as client:
-                result = client.import_auth_file(path)
+                for format_name, path in paths.items():
+                    try:
+                        results[format_name] = client.import_auth_file(
+                            path, format_name=format_name
+                        )
+                    except Grok2APIImportError as exc:
+                        errors[format_name] = str(exc)
         except Grok2APIImportError as exc:
             store.update_remote_import_status(
                 account_id,
@@ -899,20 +951,38 @@ def create_app() -> FastAPI:
                 error=str(exc),
             )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        import_status = "partial" if int(result.get("syncFailed", 0) or 0) > 0 else "success"
-        import_error = (
-            f"远程同步失败 {result.get('syncFailed', 0)} 个"
-            if import_status == "partial"
-            else ""
+        if not results:
+            error_text = "; ".join(f"{name}: {error}" for name, error in errors.items())
+            store.update_remote_import_status(
+                account_id,
+                "grok2api",
+                status="failed",
+                error=error_text,
+            )
+            raise HTTPException(status_code=502, detail=error_text or "Grok2API 导入失败")
+        sync_failed = sum(
+            int(result.get("syncFailed", 0) or 0) for result in results.values()
         )
+        import_status = "partial" if errors or sync_failed else "success"
+        import_errors = [f"{name}: {error}" for name, error in errors.items()]
+        if sync_failed:
+            import_errors.append(f"远程同步失败 {sync_failed} 个")
         store.update_remote_import_status(
             account_id,
             "grok2api",
             status=import_status,
-            error=import_error,
+            error="; ".join(import_errors),
         )
         refreshed = store.get_results_by_ids([account_id])[0]
-        return {"ok": True, "result": result, "item": _serialize_record(refreshed)}
+        aggregate = {
+            "formats": results,
+            "errors": errors,
+            "created": sum(int(result.get("created", 0) or 0) for result in results.values()),
+            "updated": sum(int(result.get("updated", 0) or 0) for result in results.values()),
+            "synced": sum(int(result.get("synced", 0) or 0) for result in results.values()),
+            "syncFailed": sync_failed,
+        }
+        return {"ok": True, "result": aggregate, "item": _serialize_record(refreshed)}
 
     @app.get("/api/accounts/{account_id}/failure-screenshot")
     def api_account_failure_screenshot(account_id: int) -> FileResponse:
