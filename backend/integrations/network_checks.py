@@ -156,8 +156,8 @@ def check_email_api(provider: str, config: dict, http_get: Callable, http_post: 
             auth_mode = str(config.get("cloudflare_auth_mode", "none") or "none")
             custom_auth = str(config.get("cloudflare_custom_auth", "") or "")
             accounts_path = str(
-                config.get("cloudflare_path_accounts", "/api/new_address")
-                or "/api/new_address"
+                config.get("cloudflare_path_accounts", "/admin/new_address")
+                or "/admin/new_address"
             )
             if not accounts_path.startswith("/"):
                 accounts_path = "/" + accounts_path
@@ -180,17 +180,25 @@ def check_email_api(provider: str, config: dict, http_get: Callable, http_post: 
                     f"Cloudflare 直建模式可用（建号端点 {accounts_path}）",
                 )
 
-            # auth_mode != none：检查 domains 鉴权是否正确
-            path = str(config.get("cloudflare_path_domains", "/api/domains") or "/api/domains")
-            if not path.startswith("/"):
-                path = "/" + path
+            # auth_mode != none：探活建号端点本身，而不是 /api/domains。
+            # cloudflare_temp_email 的 /api/domains 并不存在，且 /api/* 一律要求
+            # 邮箱地址 Bearer JWT，用 admin/全局密码头探它必然 401 误报；建号端点
+            # 才是注册真正调用的路径。GET 无副作用，可同时验证服务在线与鉴权通过：
+            # 鉴权失败返回 401/403，鉴权通过但方法不允许返回 404（POST-only）。
+            path = accounts_path
             url = f"{base}{path}"
             headers = cloudflare_provider.build_headers(api_key, auth_mode, custom_auth)
             params = cloudflare_provider.apply_auth_params({}, api_key, auth_mode)
             resp = http_get(url, headers=headers, params=params, timeout=10)
-            if resp.status_code >= 400:
-                return "邮箱API", False, f"Cloudflare 鉴权失败 HTTP {resp.status_code}（auth_mode={auth_mode}）"
-            return "邮箱API", True, f"Cloudflare 可达 HTTP {resp.status_code}（auth_mode={auth_mode}）"
+            code = resp.status_code
+            if code in (401, 403):
+                return "邮箱API", False, f"Cloudflare 鉴权失败 HTTP {code}（auth_mode={auth_mode}，探活端点 {path}）"
+            if code >= 500:
+                return "邮箱API", False, f"Cloudflare 服务异常 HTTP {code}（auth_mode={auth_mode}，探活端点 {path}）"
+            if code == 404:
+                # POST-only 建号端点 GET 探测返回 404（方法不允许）= 服务在线且鉴权通过。
+                return "邮箱API", True, f"Cloudflare 鉴权通过，建号端点可用（探活端点 {path}）"
+            return "邮箱API", True, f"Cloudflare 可达 HTTP {code}（auth_mode={auth_mode}，探活端点 {path}）"
 
         if provider == "duckmail":
             base = str(config.get("duckmail_api_base", "") or "https://api.duckmail.sbs").rstrip("/")

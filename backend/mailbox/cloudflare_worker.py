@@ -72,7 +72,7 @@ def create_temp_address(
     http_post: HttpPost,
     api_base: str,
     *,
-    accounts_path: str = "/api/new_address",
+    accounts_path: str = "/admin/new_address",
     domain: str = "",
     api_key: str = "",
     auth_mode: str = "none",

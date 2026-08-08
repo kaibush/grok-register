@@ -177,7 +177,7 @@ DEFAULT_CONFIG = {
     "cloudflare_auth_mode": "none",
     "cloudflare_custom_auth": "",
     "cloudflare_path_domains": "/api/domains",
-    "cloudflare_path_accounts": "/api/new_address",
+    "cloudflare_path_accounts": "/admin/new_address",
     "cloudflare_path_token": "/api/token",
     "cloudflare_path_messages": "/api/mails",
     "outlookemail_api_base": "",
@@ -691,7 +691,7 @@ def cloudflare_create_temp_address(api_base):
     return cloudflare_provider.create_temp_address(
         http_post,
         api_base,
-        accounts_path=get_cloudflare_path("cloudflare_path_accounts", "/api/new_address"),
+        accounts_path=get_cloudflare_path("cloudflare_path_accounts", "/admin/new_address"),
         domain=cloudflare_next_default_domain(),
         api_key=get_cloudflare_api_key(),
         auth_mode=get_cloudflare_auth_mode(),
@@ -1674,6 +1674,7 @@ def get_email_and_token(api_key=None):
             # cloudflare_temp_email 专用模式
             return cloudflare_create_temp_address(api_base)
         except Exception as primary_exc:
+            create_path = get_cloudflare_path("cloudflare_path_accounts", "/admin/new_address")
             try:
                 return cloudflare_provider.create_mailbox_fallback(
                     http_get,
@@ -1686,8 +1687,14 @@ def get_email_and_token(api_key=None):
                     auth_mode=get_cloudflare_auth_mode(),
                     custom_auth=get_cloudflare_custom_auth(),
                 )
-            except Exception:
-                raise Exception(f"Cloudflare 创建邮箱失败: {primary_exc}")
+            except Exception as fallback_exc:
+                raise Exception(
+                    "Cloudflare 创建邮箱失败；"
+                    f"主接口 {create_path}: "
+                    f"{primary_exc.__class__.__name__}: {primary_exc}；"
+                    f"兼容回退: "
+                    f"{fallback_exc.__class__.__name__}: {fallback_exc}"
+                ) from fallback_exc
     if provider == "mailnest":
         return mailnest_buy_email(), "_"
     return duckmail_provider.create_mailbox(

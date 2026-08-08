@@ -9,7 +9,7 @@
   "cloudflare_auth_mode": "none",
   "cloudflare_custom_auth": "",
   "cloudflare_path_domains": "/api/domains",
-  "cloudflare_path_accounts": "/api/new_address",
+  "cloudflare_path_accounts": "/admin/new_address",
   "cloudflare_path_token": "/api/token",
   "cloudflare_path_messages": "/api/mails",
   "outlookemail_api_base": "",
