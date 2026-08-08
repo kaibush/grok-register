@@ -1286,6 +1286,25 @@ def grok2api_auth_filename(entry: dict, email: str = "") -> str:
     return f"g2a-{safe}.json"
 
 
+def grok2api_format_filename(format_name: str, entry: dict, email: str = "") -> str:
+    """返回三种 Grok2API 账号格式对应的文件名。"""
+    normalized = str(format_name or "").strip().lower()
+    if normalized == "grok_build":
+        return grok2api_auth_filename(entry, email=email)
+    if normalized not in {"grok_web", "grok_console"}:
+        raise ValueError("format_name 必须是 grok_build、grok_web 或 grok_console")
+    ident = (
+        str(email or "").strip()
+        or str(entry.get("email") or "").strip()
+        or str(entry.get("name") or "").strip()
+        or str(entry.get("user_id") or "").strip()
+        or secrets.token_hex(4)
+    )
+    safe = _safe_email_for_filename(ident)
+    prefix = "grok-web" if normalized == "grok_web" else "grok-console"
+    return f"{prefix}-{safe}.json"
+
+
 def token_to_grok2api_account(token: dict, email: str = "") -> dict:
     """token dict → Grok2API grok_build 导入账号条目。
 
@@ -1346,19 +1365,76 @@ def token_to_grok2api_account(token: dict, email: str = "") -> dict:
     }
 
 
-def write_grok2api_auth(auth_dir: Path, token: dict, email: str = "") -> Path:
-    """写出 Grok2API 可导入的 grok_build auth（accounts[] 包装）。"""
-    auth_dir.mkdir(parents=True, exist_ok=True)
-    account = token_to_grok2api_account(token, email=email)
-    path = auth_dir / grok2api_auth_filename(account, email=email)
-    document = {"accounts": [account]}
+def _grok2api_template_identity(token: dict, email: str = "") -> tuple[str, str]:
+    build_account = token_to_grok2api_account(token, email=email)
+    email_value = str(build_account.get("email") or email or "").strip()
+    user_id = str(build_account.get("user_id") or "").strip() or email_value
+    return email_value, user_id
+
+
+def token_to_grok2api_web_account(token: dict, email: str = "", sso: str = "") -> dict:
+    """将 Token 和 SSO 转换为 Grok Web 的严格 accounts 条目。"""
+    email_value, user_id = _grok2api_template_identity(token, email=email)
+    return {
+        "name": email_value,
+        "email": email_value,
+        "user_id": user_id,
+        "sso_token": str(sso or "").strip(),
+        "token": "",
+        "tier": "basic",
+        "cloudflare_cookies": "",
+    }
+
+
+def token_to_grok2api_console_account(token: dict, email: str = "", sso: str = "") -> dict:
+    """将 Token 和 SSO 转换为 Grok Console 的严格 accounts 条目。"""
+    email_value, user_id = _grok2api_template_identity(token, email=email)
+    local_part = email_value.split("@", 1)[0] if email_value else user_id
+    return {
+        "name": f"Grok Console {local_part}".strip(),
+        "email": email_value,
+        "user_id": user_id,
+        "sso_token": str(sso or "").strip(),
+        "token": "",
+        "cloudflare_cookies": "",
+    }
+
+
+def _write_grok2api_document(path: Path, document: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(document, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    tmp.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
     return path
+
+
+def write_grok2api_auth(auth_dir: Path, token: dict, email: str = "") -> Path:
+    """写出 Grok2API 可导入的 grok_build auth（accounts[] 包装）。"""
+    account = token_to_grok2api_account(token, email=email)
+    path = auth_dir / grok2api_auth_filename(account, email=email)
+    return _write_grok2api_document(path, {"accounts": [account]})
+
+
+def write_grok2api_auth_bundle(
+    auth_dir: Path,
+    token: dict,
+    email: str = "",
+    sso: str = "",
+) -> dict[str, Path]:
+    """同时写出 Grok Build、Grok Web 和 Grok Console 三种导入文件。"""
+    web_account = token_to_grok2api_web_account(token, email=email, sso=sso)
+    console_account = token_to_grok2api_console_account(token, email=email, sso=sso)
+    return {
+        "grok_build": write_grok2api_auth(auth_dir, token, email=email),
+        "grok_web": _write_grok2api_document(
+            auth_dir / grok2api_format_filename("grok_web", web_account, email=email),
+            {"provider": "grok_web", "accounts": [web_account]},
+        ),
+        "grok_console": _write_grok2api_document(
+            auth_dir / grok2api_format_filename("grok_console", console_account, email=email),
+            {"provider": "grok_console", "accounts": [console_account]},
+        ),
+    }
 
 
 def upload_cpa_auth_remote(

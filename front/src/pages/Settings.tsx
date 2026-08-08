@@ -382,7 +382,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
             <Card>
               <CardHeader>
                 <CardTitle>Grok2API 目标</CardTitle>
-                <CardDescription>保存 grok_build JSON，并通过管理员账号登录远程服务导入。</CardDescription>
+                <CardDescription>保存 Grok Build、Grok Web、Grok Console 三种 JSON，并通过管理员账号登录远程服务导入。</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4">
                 <ConfigField {...fieldState} label="本地授权目录" field="grok2api_auth_dir" />
@@ -397,7 +397,7 @@ export function SettingsPage({ section = "registration" }: { section?: SettingsS
                 <ConfigField {...fieldState} label="管理员密码" field="grok2api_remote_password" type="password" />
                 <ToggleRow
                   title="转换成功后自动导入"
-                  description="生成 Grok2API JSON 后立即登录远程管理端并导入；导入结果单独记录"
+                  description="生成三种 Grok2API JSON 后立即登录远程管理端并逐个导入；导入结果单独记录"
                   checked={!!config.grok2api_auto_import}
                   onCheckedChange={(value) => setField("grok2api_auto_import", value)}
                 />
