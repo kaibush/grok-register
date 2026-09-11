@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 
@@ -128,6 +129,19 @@ def redact_proxy_text(value: object) -> str:
     return _AUTHENTICATED_PROXY_IN_TEXT.sub(
         r"\1***:***@", str(value if value is not None else "")
     )
+
+
+def expand_session_placeholder(proxy_url: str) -> str:
+    """把代理地址里的 {session} 占位符替换为新的随机标识（每次调用独立生成）。
+
+    配合 resin 等按认证用户名（Platform.Account）分配粘性会话的代理池使用：
+    每个调用方（如一次浏览器启动）拿到全新标识即获得全新出口 IP。
+    不含占位符时原样返回。
+    """
+    value = str(proxy_url or "")
+    if "{session}" not in value:
+        return value
+    return value.replace("{session}", secrets.token_hex(6))
 
 
 def resolve_proxy_url(proxy_url: str) -> str:

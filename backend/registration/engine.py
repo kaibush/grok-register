@@ -45,7 +45,12 @@ from backend.automation import session as _bs
 from backend.registration import signup_flow as _rf
 from backend.integrations import network_checks as _conn
 from backend.registration.store import RegistrationRepository
-from backend.integrations.proxy import redact_proxy_text, redact_proxy_url, resolve_proxy_url
+from backend.integrations.proxy import (
+    expand_session_placeholder,
+    redact_proxy_text,
+    redact_proxy_url,
+    resolve_proxy_url,
+)
 from backend.shared.paths import DATA_ROOT, PROJECT_ROOT
 from backend.automation.session import (
     browser,
@@ -892,6 +897,11 @@ DUCKMAIL_API_BASE_DEFAULT = duckmail_provider.API_BASE_DEFAULT
 def get_proxies():
     proxy = resolve_proxy_url(config.get("proxy", ""))
     if proxy:
+        # 支持 {session} 占位符：每次调用替换为新的随机标识。
+        # 浏览器每次启动时调用本函数取代理，因此每个浏览器会话获得独立标识；
+        # 配合 resin 等按“账号”维度分配粘性出口的代理池（认证用户名 Platform.Account），
+        # 可实现“一次注册会话一个全新出口 IP，会话结束租约到期即弃”。
+        proxy = expand_session_placeholder(proxy)
         return {"http": proxy, "https": proxy}
     return {}
 

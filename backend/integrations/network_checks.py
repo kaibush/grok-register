@@ -11,7 +11,11 @@ from typing import Callable, List, Tuple
 from urllib.parse import urlparse
 
 from backend.mailbox import cloudflare_worker as cloudflare_provider
-from backend.integrations.proxy import redact_proxy_text, resolve_proxy_url
+from backend.integrations.proxy import (
+    expand_session_placeholder,
+    redact_proxy_text,
+    resolve_proxy_url,
+)
 from backend.shared.paths import resolve_project_path
 
 CheckResult = Tuple[str, bool, str]  # name, ok, detail
@@ -367,7 +371,7 @@ def check_cpa(config: dict, http_get: Callable) -> CheckResult:
 
 def run_connectivity_checks(config: dict, http_get: Callable, http_post: Callable) -> List[CheckResult]:
     results = []
-    proxy = resolve_proxy_url(config.get("proxy", ""))
+    proxy = expand_session_placeholder(resolve_proxy_url(config.get("proxy", "")))
     results.append(check_proxy(proxy, http_get))
     results.append(check_xai_signup(proxy, http_get))
     results.append(
