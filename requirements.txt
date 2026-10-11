@@ -1,5 +1,5 @@
 camoufox[geoip]>=0.5.4,<0.6
 cloakbrowser[geoip]>=0.5.7,<0.6
-curl_cffi==0.13.0
+curl_cffi==0.15.0
 fastapi>=0.110
 uvicorn[standard]>=0.27
